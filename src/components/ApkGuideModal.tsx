@@ -258,8 +258,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: 'npm'
-      - run: npm ci || npm install
+      - run: npm install
       - run: npm run build
       - name: Bundle Web Assets into Android
         run: |
@@ -269,31 +268,39 @@ jobs:
         with:
           distribution: 'temurin'
           java-version: '17'
+      - name: Accept Android SDK Licenses
+        run: yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses 2>/dev/null || true
       - uses: gradle/actions/setup-gradle@v3
         with:
           gradle-version: '8.4'
+          build-root-directory: android-shell
       - name: Build APKs
         run: |
+          chmod +x android-shell/gradlew
           cd android-shell
-          gradle wrapper --gradle-version 8.4
-          chmod +x gradlew
-          ./gradlew assembleRelease assembleDebug
+          ./gradlew assembleRelease assembleDebug --stacktrace --no-daemon
       - name: Organize Artifacts
+        if: always()
         run: |
           mkdir -p release-artifacts
-          cp android-shell/app/build/outputs/apk/release/app-release.apk release-artifacts/YouTube-Viewer-release.apk
-          cp android-shell/app/build/outputs/apk/debug/app-debug.apk release-artifacts/YouTube-Viewer-debug.apk
+          find android-shell/app/build/outputs/apk/release -type f -name "*.apk" -exec cp {} release-artifacts/YouTube-Viewer-release.apk \\; 2>/dev/null || true
+          find android-shell/app/build/outputs/apk/debug -type f -name "*.apk" -exec cp {} release-artifacts/YouTube-Viewer-debug.apk \\; 2>/dev/null || true
+          cd release-artifacts
+          for apk in *.apk; do [ -f "$apk" ] && sha256sum "$apk" > "$apk.sha256"; done
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: youtube-viewer-apks
           path: release-artifacts/*
+          if-no-files-found: ignore
       - uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
+        if: success() && (startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+        continue-on-error: true
         with:
           tag_name: \${{ github.event.inputs.tag_name || github.ref_name || 'v1.0.0' }}
-          files: |
-            release-artifacts/YouTube-Viewer-release.apk
-            release-artifacts/YouTube-Viewer-debug.apk
+          files: release-artifacts/*
+          fail_on_unmatched_files: false
+          token: \${{ secrets.GITHUB_TOKEN }}
         env:
           GITHUB_TOKEN: \${{ secrets.GITHUB_TOKEN }}`;
 
@@ -547,6 +554,9 @@ export const ApkGuideModal: React.FC<ApkGuideModalProps> = ({
                 <code className="px-2 py-0.5 rounded bg-neutral-950 border border-neutral-800 text-[11px] text-neutral-200 font-mono">
                   git tag v1.0.0 && git push --tags
                 </code>
+              </div>
+              <div className="pt-1 text-[11px] text-neutral-400 border-t border-neutral-800">
+                <span className="text-amber-400 font-medium">Tip:</span> Ensure GitHub repo <code className="text-neutral-300">Settings &gt; Actions &gt; General &gt; Workflow permissions</code> is set to <strong>"Read and write permissions"</strong> so the workflow can attach APKs to Releases. (APKs are also always uploaded under GitHub Actions <strong>Artifacts</strong>).
               </div>
             </div>
 

@@ -17,6 +17,12 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    signingConfigs {
+        named("debug") {
+            // Standard debug signing config for development & self-contained releases
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false

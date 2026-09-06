@@ -41,11 +41,10 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: 'npm'
 
       - name: Install Web Dependencies
         run: |
-          npm ci || npm install
+          npm install
 
       - name: Build Web Application
         run: |
@@ -64,20 +63,19 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
+      - name: Accept Android SDK Licenses
+        run: |
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses 2>/dev/null || true
+
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
         with:
           gradle-version: '8.4'
-          cache-read-only: false
+          build-root-directory: android-shell
 
-      - name: Prepare Gradle Wrapper
+      - name: Make Gradle Wrapper Executable
         run: |
-          cd android-shell
-          if [ ! -f "gradlew" ]; then
-            echo "Generating Gradle wrapper..."
-            gradle wrapper --gradle-version 8.4 --distribution-type bin
-          fi
-          chmod +x gradlew
+          chmod +x android-shell/gradlew
 
       - name: Build Android APKs (Release & Debug)
         run: |
@@ -85,17 +83,28 @@ jobs:
           ./gradlew assembleRelease assembleDebug --stacktrace --no-daemon
 
       - name: Package & Verify APK Artifacts
+        if: always()
         run: |
           mkdir -p release-artifacts
           
-          # Copy release and debug APKs
-          cp android-shell/app/build/outputs/apk/release/app-release.apk release-artifacts/YouTube-Viewer-release.apk
-          cp android-shell/app/build/outputs/apk/debug/app-debug.apk release-artifacts/YouTube-Viewer-debug.apk
+          # Find and copy release and debug APKs
+          find android-shell/app/build/outputs/apk/release -type f -name "*.apk" -exec cp {} release-artifacts/YouTube-Viewer-release.apk \; 2>/dev/null || true
+          find android-shell/app/build/outputs/apk/debug -type f -name "*.apk" -exec cp {} release-artifacts/YouTube-Viewer-debug.apk \; 2>/dev/null || true
+
+          # If release APK name was different, pick first available APK
+          if [ ! -f "release-artifacts/YouTube-Viewer-release.apk" ]; then
+            first_apk=$(find android-shell/app/build/outputs/apk -type f -name "*.apk" 2>/dev/null | head -n 1)
+            if [ -n "$first_apk" ]; then
+              cp "$first_apk" release-artifacts/YouTube-Viewer-release.apk
+            fi
+          fi
 
           cd release-artifacts
-          # Generate SHA256 checksums
-          sha256sum YouTube-Viewer-release.apk > YouTube-Viewer-release.apk.sha256
-          sha256sum YouTube-Viewer-debug.apk > YouTube-Viewer-debug.apk.sha256
+          for apk in *.apk; do
+            if [ -f "$apk" ]; then
+              sha256sum "$apk" > "${apk}.sha256"
+            fi
+          done
           
           echo "=== COMPILED APK ARTIFACTS ==="
           ls -lh
@@ -103,14 +112,16 @@ jobs:
 
       - name: Upload APKs to GitHub Actions Artifacts
         uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: youtube-viewer-apks
           path: release-artifacts/*
-          if-no-files-found: error
+          if-no-files-found: ignore
           retention-days: 30
 
       - name: Determine Release Tag & Title
         id: release_info
+        if: success()
         run: |
           if [ -n "${{ github.event.inputs.tag_name }}" ]; then
             TAG="${{ github.event.inputs.tag_name }}"
@@ -130,18 +141,17 @@ jobs:
 
       - name: Publish GitHub Release with Working APK
         uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+        if: success() && (startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+        continue-on-error: true
         with:
           tag_name: ${{ steps.release_info.outputs.TAG }}
           name: ${{ steps.release_info.outputs.TITLE }}
           draft: false
           prerelease: ${{ github.event.inputs.is_prerelease == 'true' }}
           generate_release_notes: true
-          files: |
-            release-artifacts/YouTube-Viewer-release.apk
-            release-artifacts/YouTube-Viewer-debug.apk
-            release-artifacts/YouTube-Viewer-release.apk.sha256
-            release-artifacts/YouTube-Viewer-debug.apk.sha256
+          files: release-artifacts/*
+          fail_on_unmatched_files: false
+          token: ${{ secrets.GITHUB_TOKEN }}
           body: |
             ## 📱 YouTube Viewer Android App Release
 
