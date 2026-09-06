@@ -1,0 +1,6 @@
+{
+  "name": "YouTube Video Viewer",
+  "description": "Paste any YouTube link to view videos instantly, with theater mode, quick controls, playback history, and APK/PWA installation.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
