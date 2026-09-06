@@ -23,13 +23,14 @@ permissions:
   contents: write
 
 concurrency:
-  group: release-apk-${{ github.ref }}
-  cancel-in-progress: true
+  group: release-apk-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build-and-release:
     name: Build & Publish APK
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - name: Checkout Code
@@ -70,17 +71,27 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
         with:
-          gradle-version: '8.4'
           build-root-directory: android-shell
+          cache-read-only: false
 
       - name: Make Gradle Wrapper Executable
         run: |
           chmod +x android-shell/gradlew
 
-      - name: Build Android APKs (Release & Debug)
+      - name: Configure Android SDK Path
+        run: |
+          echo "sdk.dir=$ANDROID_HOME" > android-shell/local.properties
+
+      - name: Build Android Release APK
         run: |
           cd android-shell
-          ./gradlew assembleRelease assembleDebug --stacktrace --no-daemon
+          ./gradlew assembleRelease --stacktrace
+
+      - name: Build Android Debug APK (Optional)
+        continue-on-error: true
+        run: |
+          cd android-shell
+          ./gradlew assembleDebug --stacktrace
 
       - name: Package & Verify APK Artifacts
         if: always()

@@ -272,13 +272,13 @@ jobs:
         run: yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses 2>/dev/null || true
       - uses: gradle/actions/setup-gradle@v3
         with:
-          gradle-version: '8.4'
           build-root-directory: android-shell
       - name: Build APKs
         run: |
           chmod +x android-shell/gradlew
           cd android-shell
-          ./gradlew assembleRelease assembleDebug --stacktrace --no-daemon
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
+          ./gradlew assembleRelease --stacktrace
       - name: Organize Artifacts
         if: always()
         run: |
