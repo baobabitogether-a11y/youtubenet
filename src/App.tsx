@@ -1,25 +1,23 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Navbar } from './components/Navbar';
 import { LinkInputBar } from './components/LinkInputBar';
 import { VideoPlayer } from './components/VideoPlayer';
 import { VideoHistory } from './components/VideoHistory';
 import { CaptionsInspector } from './components/CaptionsInspector';
+import { SubtitlesTeacherPanel } from './components/SubtitlesTeacherPanel';
 import { ApkGuideModal } from './components/ApkGuideModal';
 import { OfflineIndicator } from './components/OfflineIndicator';
 import { usePWAInstall } from './hooks/usePWAInstall';
-import { VideoItem, InterceptedCaptionData, ParsedYouTubeResult, YouTubeFormatType } from './types';
+import {
+  VideoItem,
+  InterceptedCaptionData,
+  ParsedYouTubeResult,
+  YouTubeFormatType,
+  YouTubePlayerHandle,
+  CaptionCue,
+} from './types';
 import { DEFAULT_VIDEO_ID, DEFAULT_VIDEO_URL, parseYouTubeUrl } from './utils/youtube';
 import { parseRawCaptionData } from './utils/captionParser';
-
-declare global {
-  interface Window {
-    AndroidNativeShell?: {
-      isNativeShell: () => boolean;
-      showToast: (msg: string) => void;
-    };
-    onNativeCaptionsInterceptedBase64?: (base64Json: string) => void;
-  }
-}
 
 const STORAGE_KEY = 'yt_viewer_history_v1';
 
@@ -31,7 +29,10 @@ export default function App() {
   const [theaterMode, setTheaterMode] = useState<boolean>(false);
   const [isApkGuideOpen, setIsApkGuideOpen] = useState<boolean>(false);
   const [interceptedData, setInterceptedData] = useState<InterceptedCaptionData | null>(null);
+  const [customCues, setCustomCues] = useState<CaptionCue[] | null>(null);
   const [isNativeShell, setIsNativeShell] = useState<boolean>(false);
+
+  const playerRef = useRef<YouTubePlayerHandle | null>(null);
 
   const [history, setHistory] = useState<VideoItem[]>(() => {
     try {
@@ -179,12 +180,20 @@ export default function App() {
 
           {/* Main Video Player */}
           <VideoPlayer
+            ref={playerRef}
             videoId={videoId}
             originalUrl={currentUrl}
             theaterMode={theaterMode}
             onToggleTheater={() => setTheaterMode(!theaterMode)}
             startTime={startTime}
             detectedFormat={detectedFormat}
+          />
+
+          {/* Subtitles Teacher & Time-Sync TTS Controller */}
+          <SubtitlesTeacherPanel
+            cues={customCues && customCues.length > 0 ? customCues : (interceptedData?.cues || [])}
+            playerRef={playerRef}
+            onLoadCues={(newCues) => setCustomCues(newCues)}
           />
 
           {/* Network Traffic & Captions Inspector (Option 2) */}

@@ -219,10 +219,34 @@ class MainActivity : AppCompatActivity() {
     inner class AndroidNativeBridge(private val context: Context) {
         @JavascriptInterface
         fun isNativeShell(): Boolean = true
+
         @JavascriptInterface
         fun showToast(msg: String) {
             mainHandler.post { Toast.makeText(context, msg, Toast.LENGTH_SHORT).show() }
         }
+
+        @JavascriptInterface
+        fun speak(text: String, lang: String, rate: Float, utteranceId: String): Boolean {
+            if (!isTtsReady || textToSpeech == null) return false
+            mainHandler.post {
+                try {
+                    textToSpeech?.language = Locale(lang)
+                    textToSpeech?.setSpeechRate(rate)
+                    textToSpeech?.speak(text, TextToSpeech.QUEUE_FLUSH, Bundle(), utteranceId)
+                } catch (e: Exception) {
+                    Log.e(TAG, "TTS speak error: \${e.message}")
+                }
+            }
+            return true
+        }
+
+        @JavascriptInterface
+        fun stopSpeaking() {
+            mainHandler.post { textToSpeech?.stop() }
+        }
+
+        @JavascriptInterface
+        fun isSpeaking(): Boolean = textToSpeech?.isSpeaking ?: false
     }
 }`;
 

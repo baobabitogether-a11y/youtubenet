@@ -41,6 +41,33 @@ export interface CaptionCue {
   text: string;
 }
 
+export interface TargetLanguage {
+  id: string;
+  code: string;
+  name: string;
+  ttsRate: number; // 0.5 to 2.0
+  enabled: boolean;
+  color?: string;
+}
+
+export type SyncPlayOrder = 'video_first' | 'tts_first';
+
+export interface TTSStatus {
+  isSpeaking: boolean;
+  currentLang?: string;
+  currentText?: string;
+  engine: 'android_native' | 'web_speech';
+}
+
+export interface YouTubePlayerHandle {
+  play: () => void;
+  pause: () => void;
+  seekTo: (seconds: number) => void;
+  getCurrentTime: () => number;
+  getPlayerState: () => number;
+  isReady: () => boolean;
+}
+
 export interface InterceptedCaptionData {
   id: string;
   url: string;
@@ -54,5 +81,22 @@ export interface InterceptedCaptionData {
   bytes: number;
   cues: CaptionCue[];
   source: 'native_webview_interceptor' | 'simulated_test';
+}
+
+declare global {
+  interface Window {
+    AndroidNativeShell?: {
+      isNativeShell: () => boolean;
+      showToast: (msg: string) => void;
+      speak?: (text: string, lang: string, rate: number, utteranceId: string) => boolean;
+      stopSpeaking?: () => void;
+      isSpeaking?: () => boolean;
+    };
+    onNativeCaptionsInterceptedBase64?: (base64Json: string) => void;
+    onNativeTTSDone?: (utteranceId: string) => void;
+    onNativeTTSError?: (utteranceId: string, errorMsg?: string) => void;
+    YT?: any;
+    onYouTubeIframeAPIReady?: () => void;
+  }
 }
 

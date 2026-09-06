@@ -17,6 +17,8 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.webkit.WebViewAssetLoader
@@ -27,18 +29,22 @@ import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.nio.charset.StandardCharsets
+import java.util.Locale
 
 /**
  * Android Native Shell Activity
  * Intercepts YouTube caption HTTP requests (youtube.com/api/timedtext)
  * via WebViewClient.shouldInterceptRequest, reads raw XML/JSON3 bytes,
- * saves to local disk, and bridges raw data back into the web view.
+ * saves to local disk, bridges raw data back into the web view,
+ * and provides native Android TextToSpeech (TTS) capabilities.
  */
-class MainActivity : AppCompatActivity() {
+class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
     private lateinit var webView: WebView
     private val okHttpClient = OkHttpClient.Builder().build()
     private val mainHandler = Handler(Looper.getMainLooper())
+    private var textToSpeech: TextToSpeech? = null
+    private var isTtsReady: Boolean = false
 
     companion object {
         private const val TAG = "YT_CAPTION_INTERCEPTOR"
@@ -78,6 +84,13 @@ class MainActivity : AppCompatActivity() {
             .setDomain("appassets.androidplatform.net")
             .addPathHandler("/", WebViewAssetLoader.AssetsPathHandler(this))
             .build()
+
+        // Initialize Android TextToSpeech engine
+        try {
+            textToSpeech = TextToSpeech(this, this)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error creating TextToSpeech: ${e.message}", e)
+        }
 
         // Add JavaScript Interface for bidirectional communication
         webView.addJavascriptInterface(AndroidNativeBridge(this), "AndroidNativeShell")
@@ -255,6 +268,59 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    override fun onInit(status: Int) {
+        if (status == TextToSpeech.SUCCESS) {
+            isTtsReady = true
+            textToSpeech?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                override fun onStart(utteranceId: String?) {
+                    Log.d(TAG, "Native TTS started utterance: $utteranceId")
+                }
+
+                override fun onDone(utteranceId: String?) {
+                    Log.d(TAG, "Native TTS finished utterance: $utteranceId")
+                    if (utteranceId != null) {
+                        mainHandler.post {
+                            webView.evaluateJavascript("if (window.onNativeTTSDone) { window.onNativeTTSDone('$utteranceId'); }", null)
+                        }
+                    }
+                }
+
+                @Deprecated("Deprecated in Java")
+                override fun onError(utteranceId: String?) {
+                    Log.e(TAG, "Native TTS error on utterance: $utteranceId")
+                    if (utteranceId != null) {
+                        mainHandler.post {
+                            webView.evaluateJavascript("if (window.onNativeTTSError) { window.onNativeTTSError('$utteranceId', 'TTS execution error'); }", null)
+                        }
+                    }
+                }
+
+                override fun onError(utteranceId: String?, errorCode: Int) {
+                    Log.e(TAG, "Native TTS error on utterance: $utteranceId (code: $errorCode)")
+                    if (utteranceId != null) {
+                        mainHandler.post {
+                            webView.evaluateJavascript("if (window.onNativeTTSError) { window.onNativeTTSError('$utteranceId', 'Error code: $errorCode'); }", null)
+                        }
+                    }
+                }
+            })
+            Log.i(TAG, "Android TextToSpeech engine initialized successfully")
+        } else {
+            Log.e(TAG, "Failed to initialize Android TextToSpeech, status=$status")
+            isTtsReady = false
+        }
+    }
+
+    override fun onDestroy() {
+        try {
+            textToSpeech?.stop()
+            textToSpeech?.shutdown()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error shutting down TTS: ${e.message}")
+        }
+        super.onDestroy()
+    }
+
     /**
      * JS Interface exposed to window.AndroidNativeShell
      */
@@ -267,6 +333,68 @@ class MainActivity : AppCompatActivity() {
             mainHandler.post {
                 Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
             }
+        }
+
+        @JavascriptInterface
+        fun speak(text: String, lang: String, rate: Float, utteranceId: String): Boolean {
+            if (!isTtsReady || textToSpeech == null) {
+                Log.w(TAG, "TTS requested but engine is not ready (isTtsReady=$isTtsReady)")
+                return false
+            }
+
+            mainHandler.post {
+                try {
+                    val locale = when (lang.lowercase()) {
+                        "en" -> Locale.ENGLISH
+                        "es" -> Locale("es", "ES")
+                        "fr" -> Locale.FRENCH
+                        "de" -> Locale.GERMAN
+                        "it" -> Locale.ITALIAN
+                        "pt" -> Locale("pt", "PT")
+                        "ru" -> Locale("ru", "RU")
+                        "ja" -> Locale.JAPANESE
+                        "ko" -> Locale.KOREAN
+                        "zh", "zh-cn" -> Locale.SIMPLIFIED_CHINESE
+                        "zh-tw" -> Locale.TRADITIONAL_CHINESE
+                        "ar" -> Locale("ar")
+                        "he" -> Locale("he")
+                        "hi" -> Locale("hi", "IN")
+                        "tr" -> Locale("tr", "TR")
+                        "nl" -> Locale("nl", "NL")
+                        "pl" -> Locale("pl", "PL")
+                        "sv" -> Locale("sv", "SE")
+                        "vi" -> Locale("vi", "VN")
+                        "th" -> Locale("th", "TH")
+                        "el" -> Locale("el", "GR")
+                        "uk" -> Locale("uk", "UA")
+                        else -> Locale(lang)
+                    }
+
+                    textToSpeech?.language = locale
+                    textToSpeech?.setSpeechRate(rate)
+                    val params = Bundle()
+                    textToSpeech?.speak(text, TextToSpeech.QUEUE_FLUSH, params, utteranceId)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error speaking text with native TTS: ${e.message}", e)
+                }
+            }
+            return true
+        }
+
+        @JavascriptInterface
+        fun stopSpeaking() {
+            mainHandler.post {
+                try {
+                    textToSpeech?.stop()
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error stopping native TTS: ${e.message}", e)
+                }
+            }
+        }
+
+        @JavascriptInterface
+        fun isSpeaking(): Boolean {
+            return textToSpeech?.isSpeaking ?: false
         }
     }
 }
