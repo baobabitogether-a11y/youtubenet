@@ -2,14 +2,12 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Navbar } from './components/Navbar';
 import { LinkInputBar } from './components/LinkInputBar';
 import { VideoPlayer } from './components/VideoPlayer';
-import { VideoHistory } from './components/VideoHistory';
-import { CaptionsInspector } from './components/CaptionsInspector';
 import { SubtitlesTeacherPanel } from './components/SubtitlesTeacherPanel';
-import { ApkGuideModal } from './components/ApkGuideModal';
+import { VideoLibraryModal } from './components/VideoLibraryModal';
 import { OfflineIndicator } from './components/OfflineIndicator';
-import { usePWAInstall } from './hooks/usePWAInstall';
 import {
   VideoItem,
+  LibraryVideoItem,
   InterceptedCaptionData,
   ParsedYouTubeResult,
   YouTubeFormatType,
@@ -19,7 +17,23 @@ import {
 import { DEFAULT_VIDEO_ID, DEFAULT_VIDEO_URL, parseYouTubeUrl } from './utils/youtube';
 import { parseRawCaptionData } from './utils/captionParser';
 
-const STORAGE_KEY = 'yt_viewer_history_v1';
+const LIBRARY_STORAGE_KEY = 'yt_video_library_v2';
+
+const DEFAULT_LIBRARY_ITEMS: LibraryVideoItem[] = [
+  {
+    id: 'jNQXAC9IVRw',
+    originalUrl: 'https://www.youtube.com/watch?v=jNQXAC9IVRw',
+    title: 'Me at the zoo',
+    cues: [
+      { id: 'cue-1', start: 1.2, duration: 3.2, text: 'All right, so here we are in front of the elephants.' },
+      { id: 'cue-2', start: 4.5, duration: 3.0, text: 'The cool thing about these guys is that...' },
+      { id: 'cue-3', start: 7.6, duration: 3.5, text: '...they have really, really, really long trunks.' },
+      { id: 'cue-4', start: 11.2, duration: 2.8, text: 'And that is cool.' },
+      { id: 'cue-5', start: 14.1, duration: 4.2, text: 'And that is pretty much all there is to say.' },
+    ],
+    timestamp: Date.now(),
+  },
+];
 
 export default function App() {
   const [videoId, setVideoId] = useState<string>(DEFAULT_VIDEO_ID);
@@ -27,143 +41,194 @@ export default function App() {
   const [startTime, setStartTime] = useState<number | undefined>(undefined);
   const [detectedFormat, setDetectedFormat] = useState<YouTubeFormatType | undefined>('standard_watch');
   const [theaterMode, setTheaterMode] = useState<boolean>(false);
-  const [isApkGuideOpen, setIsApkGuideOpen] = useState<boolean>(false);
+  const [isLibraryOpen, setIsLibraryOpen] = useState<boolean>(false);
   const [interceptedData, setInterceptedData] = useState<InterceptedCaptionData | null>(null);
-  const [customCues, setCustomCues] = useState<CaptionCue[] | null>(null);
-  const [isNativeShell, setIsNativeShell] = useState<boolean>(false);
+  const [customCues, setCustomCues] = useState<CaptionCue[] | null>(() => {
+    return DEFAULT_LIBRARY_ITEMS[0].cues || null;
+  });
+  const [isFetchingSubtitles, setIsFetchingSubtitles] = useState<boolean>(false);
+  const [fetchError, setFetchError] = useState<string | null>(null);
 
   const playerRef = useRef<YouTubePlayerHandle | null>(null);
 
-  const [history, setHistory] = useState<VideoItem[]>(() => {
+  // Cached Video and Subtitle Library
+  const [library, setLibrary] = useState<LibraryVideoItem[]>(() => {
     try {
-      const saved = localStorage.getItem(STORAGE_KEY);
+      const saved = localStorage.getItem(LIBRARY_STORAGE_KEY);
       if (saved) {
-        return JSON.parse(saved);
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed;
+        }
       }
     } catch {
       // Ignore
     }
-    return [
-      {
-        id: DEFAULT_VIDEO_ID,
-        originalUrl: DEFAULT_VIDEO_URL,
-        timestamp: Date.now(),
-      },
-    ];
+    return DEFAULT_LIBRARY_ITEMS;
   });
 
-  const { isInstallable, isInstalled, install } = usePWAInstall();
+  // Fetch Subtitles from backend
+  const handleFetchSubtitles = async (targetId?: string) => {
+    const idToFetch = targetId || videoId;
+    if (!idToFetch) return;
+
+    // Check if already in library with non-empty cues
+    const cachedItem = library.find((item) => item.id === idToFetch);
+    if (cachedItem && cachedItem.cues && cachedItem.cues.length > 0) {
+      setCustomCues(cachedItem.cues);
+      return;
+    }
+
+    setIsFetchingSubtitles(true);
+    setFetchError(null);
+
+    try {
+      const res = await fetch('/api/fetch-subtitles', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ videoId: idToFetch }),
+      });
+
+      const data = await res.json();
+      if (!res.ok || !data.cues || data.cues.length === 0) {
+        throw new Error(data.error || 'No subtitles found for this video.');
+      }
+
+      setCustomCues(data.cues);
+
+      // Auto-cache into library
+      setLibrary((prev) => {
+        const existing = prev.find((item) => item.id === idToFetch);
+        if (existing) {
+          return prev.map((item) =>
+            item.id === idToFetch ? { ...item, cues: data.cues } : item
+          );
+        }
+        const newItem: LibraryVideoItem = {
+          id: idToFetch,
+          originalUrl: currentUrl,
+          title: `Video ${idToFetch}`,
+          cues: data.cues,
+          timestamp: Date.now(),
+        };
+        return [newItem, ...prev];
+      });
+    } catch (err: any) {
+      console.warn('Subtitles fetch error:', err);
+      setFetchError(err.message || 'Failed to fetch subtitles.');
+    } finally {
+      setIsFetchingSubtitles(false);
+    }
+  };
 
   // Detect Android Native Shell bridge & register global listener
   useEffect(() => {
-    if (typeof window !== 'undefined' && window.AndroidNativeShell?.isNativeShell?.()) {
-      setIsNativeShell(true);
-    }
+    if (typeof window !== 'undefined') {
+      window.onNativeCaptionsInterceptedBase64 = (base64Payload: string) => {
+        try {
+          const decodedString = atob(base64Payload);
+          const payload = JSON.parse(decodedString);
+          const { format, cues } = parseRawCaptionData(payload.rawData || '');
 
-    // Listener called by Android MainActivity.kt evaluateJavascript
-    window.onNativeCaptionsInterceptedBase64 = (base64Payload: string) => {
-      try {
-        const decodedString = atob(base64Payload);
-        const payload = JSON.parse(decodedString);
-        const { format, cues } = parseRawCaptionData(payload.rawData || '');
+          const data: InterceptedCaptionData = {
+            id: `native-${Date.now()}`,
+            url: payload.url || 'https://www.youtube.com/api/timedtext',
+            videoId,
+            timestamp: payload.timestamp || Date.now(),
+            method: 'GET',
+            status: payload.status || 200,
+            contentType: payload.contentType || 'text/xml',
+            format,
+            rawData: payload.rawData || '',
+            bytes: payload.bytes || payload.rawData?.length || 0,
+            cues,
+            source: 'native_webview_interceptor',
+          };
 
-        const data: InterceptedCaptionData = {
-          id: `native-${Date.now()}`,
-          url: payload.url || 'https://www.youtube.com/api/timedtext',
-          videoId,
-          timestamp: payload.timestamp || Date.now(),
-          method: 'GET',
-          status: payload.status || 200,
-          contentType: payload.contentType || 'text/xml',
-          format,
-          rawData: payload.rawData || '',
-          bytes: payload.bytes || payload.rawData?.length || 0,
-          cues,
-          source: 'native_webview_interceptor',
-        };
-
-        setInterceptedData(data);
-        if (window.AndroidNativeShell?.showToast) {
-          window.AndroidNativeShell.showToast(`Intercepted ${cues.length} caption cues!`);
+          setInterceptedData(data);
+          if (cues.length > 0) {
+            setCustomCues(cues);
+          }
+        } catch (err) {
+          console.error('Error processing native intercepted caption:', err);
         }
-      } catch (err) {
-        console.error('Error processing native intercepted caption:', err);
-      }
-    };
+      };
+    }
 
     return () => {
       delete window.onNativeCaptionsInterceptedBase64;
     };
   }, [videoId]);
 
-  // Persist history
+  // Persist library
   useEffect(() => {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(history));
+      localStorage.setItem(LIBRARY_STORAGE_KEY, JSON.stringify(library));
     } catch {
       // Ignore
     }
-  }, [history]);
+  }, [library]);
 
+  // Flow Step 1: User inputs video URL
   const handleSelectVideo = (newId: string, rawUrl: string, parsedInfo?: ParsedYouTubeResult) => {
     setVideoId(newId);
     setCurrentUrl(rawUrl);
     setStartTime(parsedInfo?.startTime);
     setDetectedFormat(parsedInfo?.formatType || 'standard_watch');
+    setFetchError(null);
 
-    setHistory((prev) => {
-      const filtered = prev.filter((item) => item.id !== newId);
-      const updated: VideoItem = {
-        id: newId,
-        originalUrl: rawUrl,
-        timestamp: Date.now(),
-      };
-      return [updated, ...filtered.slice(0, 19)];
-    });
+    // Check if video is already in library with cached subtitles
+    const cachedItem = library.find((item) => item.id === newId);
+    if (cachedItem && cachedItem.cues && cachedItem.cues.length > 0) {
+      setCustomCues(cachedItem.cues);
+    } else {
+      setCustomCues(null);
+      setInterceptedData(null);
+    }
   };
 
-  const handleHistorySelect = (item: VideoItem) => {
+  // Flow Step 1: User loads video from library (cached videoID and subtitles)
+  const handleSelectLibraryItem = (item: LibraryVideoItem) => {
     const parsed = parseYouTubeUrl(item.originalUrl);
     setVideoId(item.id);
     setCurrentUrl(item.originalUrl);
     setStartTime(parsed?.startTime);
     setDetectedFormat(parsed?.formatType || 'standard_watch');
+    setFetchError(null);
+    if (item.cues && item.cues.length > 0) {
+      setCustomCues(item.cues);
+    } else {
+      setCustomCues(null);
+    }
   };
 
-  const handleRemoveHistoryItem = (idToRemove: string) => {
-    setHistory((prev) => prev.filter((item) => item.id !== idToRemove));
-  };
-
-  const handleClearHistory = () => {
-    setHistory([]);
-  };
-
-  const handleSimulateCaption = (raw: string, format: 'xml' | 'json3') => {
-    const { cues } = parseRawCaptionData(raw);
-    const data: InterceptedCaptionData = {
-      id: `sim-${Date.now()}`,
-      url: `https://www.youtube.com/api/timedtext?v=${videoId}&lang=ru&fmt=${format === 'json3' ? 'json3' : 'srv3'}&sparams=caps,expire,v`,
-      videoId,
+  const handleSaveCurrentToLibrary = (title: string) => {
+    const activeCues = customCues && customCues.length > 0 ? customCues : (interceptedData?.cues || []);
+    const newItem: LibraryVideoItem = {
+      id: videoId,
+      originalUrl: currentUrl,
+      title: title || `Video ${videoId}`,
+      cues: activeCues,
       timestamp: Date.now(),
-      method: 'GET',
-      status: 200,
-      contentType: format === 'json3' ? 'application/json; charset=utf-8' : 'text/xml; charset=utf-8',
-      format,
-      rawData: raw,
-      bytes: new Blob([raw]).size,
-      cues,
-      source: 'simulated_test',
     };
-    setInterceptedData(data);
+
+    setLibrary((prev) => {
+      const filtered = prev.filter((i) => i.id !== videoId);
+      return [newItem, ...filtered];
+    });
   };
+
+  const handleRemoveFromLibrary = (idToRemove: string) => {
+    setLibrary((prev) => prev.filter((item) => item.id !== idToRemove));
+  };
+
+  const activeCues = customCues && customCues.length > 0 ? customCues : (interceptedData?.cues || []);
 
   return (
     <div className="min-h-screen bg-neutral-950 text-neutral-100 flex flex-col selection:bg-red-500/30 selection:text-red-200">
       <Navbar
-        onOpenApkGuide={() => setIsApkGuideOpen(true)}
-        isInstallable={isInstallable}
-        onInstall={install}
-        isInstalled={isInstalled}
+        onOpenLibrary={() => setIsLibraryOpen(true)}
+        libraryCount={library.length}
       />
 
       <main className="flex-1 w-full flex flex-col items-center py-6 px-4 sm:px-6">
@@ -172,10 +237,12 @@ export default function App() {
             theaterMode ? 'max-w-6xl' : 'max-w-4xl'
           } flex flex-col gap-5`}
         >
-          {/* Link paste & submit bar */}
+          {/* Step 1: Link paste & Library Access */}
           <LinkInputBar
             currentUrl={currentUrl}
             onSelectVideo={handleSelectVideo}
+            onOpenLibrary={() => setIsLibraryOpen(true)}
+            libraryCount={library.length}
           />
 
           {/* Main Video Player */}
@@ -187,52 +254,41 @@ export default function App() {
             onToggleTheater={() => setTheaterMode(!theaterMode)}
             startTime={startTime}
             detectedFormat={detectedFormat}
+            onFetchSubtitles={handleFetchSubtitles}
+            isFetchingSubtitles={isFetchingSubtitles}
+            hasSubtitles={activeCues.length > 0}
           />
 
-          {/* Subtitles Teacher & Time-Sync TTS Controller */}
+          {/* Steps 2-6: Subtitles Teacher & Multi-Column Translation Workspace */}
           <SubtitlesTeacherPanel
-            cues={customCues && customCues.length > 0 ? customCues : (interceptedData?.cues || [])}
+            cues={activeCues}
             playerRef={playerRef}
             onLoadCues={(newCues) => setCustomCues(newCues)}
-          />
-
-          {/* Network Traffic & Captions Inspector (Option 2) */}
-          <CaptionsInspector
-            interceptedData={interceptedData}
-            onSimulate={handleSimulateCaption}
-            onClear={() => setInterceptedData(null)}
-            isNativeShell={isNativeShell}
-          />
-
-          {/* History of viewed videos */}
-          <VideoHistory
-            history={history}
-            activeVideoId={videoId}
-            onSelect={handleHistorySelect}
-            onRemove={handleRemoveHistoryItem}
-            onClear={handleClearHistory}
+            onOpenLibrary={() => setIsLibraryOpen(true)}
+            onFetchSubtitles={handleFetchSubtitles}
+            isFetchingSubtitles={isFetchingSubtitles}
+            fetchError={fetchError}
           />
         </div>
       </main>
 
       {/* Footer */}
-      <footer className="w-full border-t border-neutral-900 py-4 px-6 text-center text-xs text-neutral-500 flex flex-wrap items-center justify-center gap-4">
-        <span>YouTube Video Viewer</span>
+      <footer className="w-full border-t border-neutral-900 py-4 px-6 text-center text-xs text-neutral-500 flex flex-wrap items-center justify-center gap-2">
+        <span>YouTube Language Learning</span>
         <span>•</span>
-        <button
-          onClick={() => setIsApkGuideOpen(true)}
-          className="hover:text-neutral-300 underline underline-offset-2 transition text-red-400"
-        >
-          Option 2: Native Android APK Shell Project &amp; Source
-        </button>
+        <span>Synchronized Subtitles &amp; Multi-Language Translation</span>
       </footer>
 
-      {/* APK & Android Installation Modal with Option 2 Interceptor Project */}
-      <ApkGuideModal
-        isOpen={isApkGuideOpen}
-        onClose={() => setIsApkGuideOpen(false)}
-        isInstallable={isInstallable}
-        onInstall={install}
+      {/* Video & Subtitle Library Modal */}
+      <VideoLibraryModal
+        isOpen={isLibraryOpen}
+        onClose={() => setIsLibraryOpen(false)}
+        library={library}
+        currentVideoId={videoId}
+        currentCues={activeCues}
+        onSelectVideo={handleSelectLibraryItem}
+        onSaveCurrentToLibrary={handleSaveCurrentToLibrary}
+        onRemoveFromLibrary={handleRemoveFromLibrary}
       />
 
       {/* Network offline warning */}

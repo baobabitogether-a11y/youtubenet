@@ -3,7 +3,7 @@ import { normalizeLanguageCode } from './ttsEngine';
 
 const memoryCache = new Map<string, string>();
 
-const SAMPLE_TRANSLATIONS: Record<string, Record<string, string>> = {
+export const SAMPLE_TRANSLATIONS: Record<string, Record<string, string>> = {
   'Hello, welcome to this video lesson!': {
     it: 'Ciao, benvenuto a questa lezione video!',
     ar: 'مرحباً بكم في هذا الدرس التعليمي بالفيديو!',

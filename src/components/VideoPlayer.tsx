@@ -9,6 +9,8 @@ import {
   Repeat,
   Sparkles,
   Clock,
+  Subtitles,
+  Loader2,
 } from 'lucide-react';
 import { getYouTubeEmbedUrl, formatTypeName } from '../utils/youtube';
 import { YouTubeFormatType, YouTubePlayerHandle } from '../types';
@@ -21,6 +23,9 @@ interface VideoPlayerProps {
   onToggleTheater: () => void;
   startTime?: number;
   detectedFormat?: YouTubeFormatType;
+  onFetchSubtitles?: () => void;
+  isFetchingSubtitles?: boolean;
+  hasSubtitles?: boolean;
 }
 
 export const VideoPlayer = forwardRef<YouTubePlayerHandle, VideoPlayerProps>(
@@ -32,6 +37,9 @@ export const VideoPlayer = forwardRef<YouTubePlayerHandle, VideoPlayerProps>(
       onToggleTheater,
       startTime,
       detectedFormat,
+      onFetchSubtitles,
+      isFetchingSubtitles = false,
+      hasSubtitles = false,
     },
     ref
   ) => {
@@ -249,6 +257,38 @@ export const VideoPlayer = forwardRef<YouTubePlayerHandle, VideoPlayerProps>(
 
           {/* Right: Controls & Sharing */}
           <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
+            {/* Direct CC / Fetch Subtitles button */}
+            {onFetchSubtitles && (
+              <button
+                id="fetch-captions-button"
+                data-testid="fetch-captions-button"
+                type="button"
+                onClick={onFetchSubtitles}
+                disabled={isFetchingSubtitles}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition active:scale-95 ${
+                  hasSubtitles
+                    ? 'bg-emerald-950/70 text-emerald-300 border-emerald-700/70 hover:bg-emerald-900/80'
+                    : isFetchingSubtitles
+                    ? 'bg-amber-950/70 text-amber-300 border-amber-700/70 animate-pulse'
+                    : 'bg-red-600 hover:bg-red-500 text-white border-red-500 shadow-sm shadow-red-600/20'
+                }`}
+                title="Fetch captions / subtitles for this video"
+              >
+                {isFetchingSubtitles ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Subtitles className="w-3.5 h-3.5" />
+                )}
+                <span>
+                  {isFetchingSubtitles
+                    ? 'Fetching Subtitles...'
+                    : hasSubtitles
+                    ? 'Subtitles Cached'
+                    : 'Fetch Subtitles / CC'}
+                </span>
+              </button>
+            )}
+
             {/* Autoplay toggle */}
             <button
               id="toggle-autoplay-button"

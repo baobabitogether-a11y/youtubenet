@@ -1,18 +1,14 @@
 import React from 'react';
-import { Play, Download, Smartphone, Youtube } from 'lucide-react';
+import { Youtube, Subtitles } from 'lucide-react';
 
 interface NavbarProps {
-  onOpenApkGuide: () => void;
-  isInstallable: boolean;
-  onInstall: () => void;
-  isInstalled: boolean;
+  onOpenLibrary?: () => void;
+  libraryCount?: number;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
-  onOpenApkGuide,
-  isInstallable,
-  onInstall,
-  isInstalled,
+  onOpenLibrary,
+  libraryCount,
 }) => {
   return (
     <header className="border-b border-neutral-800/80 bg-neutral-900/60 backdrop-blur-md sticky top-0 z-40">
@@ -24,42 +20,28 @@ export const Navbar: React.FC<NavbarProps> = ({
           </div>
           <div>
             <span className="font-semibold text-base sm:text-lg text-neutral-100 tracking-tight flex items-center gap-2">
-              YouTube Viewer
+              YouTube Language Learning
             </span>
             <p className="text-xs text-neutral-400 hidden sm:block">
-              Paste & stream any YouTube video
+              Synchronized timed subtitles &amp; multi-language speech translation
             </p>
           </div>
         </div>
 
-        {/* Actions */}
-        <div className="flex items-center gap-2 sm:gap-3">
-          {/* Quick Install button if browser prompt ready */}
-          {isInstallable && !isInstalled && (
-            <button
-              id="install-pwa-button"
-              onClick={onInstall}
-              className="flex items-center gap-2 px-3.5 py-1.5 rounded-lg bg-red-600 hover:bg-red-500 text-white text-xs sm:text-sm font-medium transition shadow-sm active:scale-95"
-              title="Install native app on device"
-            >
-              <Download className="w-4 h-4" />
-              <span>Install App</span>
-            </button>
-          )}
-
-          {/* APK / Android Guide modal trigger */}
+        {/* Right side: quick status / library info */}
+        {onOpenLibrary && (
           <button
-            id="open-apk-guide-button"
-            onClick={onOpenApkGuide}
-            className="flex items-center gap-2 px-3.5 py-1.5 rounded-lg border border-neutral-700 hover:border-neutral-600 bg-neutral-800/80 hover:bg-neutral-800 text-neutral-200 text-xs sm:text-sm font-medium transition shadow-sm active:scale-95"
-            title="Download APK or Build Android App"
+            type="button"
+            id="navbar-library-button"
+            onClick={onOpenLibrary}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-neutral-700 bg-neutral-800/80 hover:bg-neutral-800 text-neutral-200 text-xs font-medium transition"
           >
-            <Smartphone className="w-4 h-4 text-emerald-400" />
-            <span className="hidden xs:inline">Get APK / Android</span>
-            <span className="xs:hidden">APK</span>
+            <Subtitles className="w-3.5 h-3.5 text-indigo-400" />
+            <span>My Library {libraryCount !== undefined ? `(${libraryCount})` : ''}</span>
           </button>
-        </div>
+        )}
       </div>
     </header>
   );
 };
+

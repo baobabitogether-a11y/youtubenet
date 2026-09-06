@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   Volume2,
   Play,
@@ -20,17 +20,30 @@ import {
   Radio,
   Clock,
   RotateCcw,
+  Subtitles,
+  HelpCircle,
+  FolderHeart,
+  Loader2,
 } from 'lucide-react';
 import { CaptionCue, TargetLanguage, SyncPlayOrder, YouTubePlayerHandle } from '../types';
 import { useSyncEngine } from '../hooks/useSyncEngine';
-import { SUPPORTED_TARGET_LANGUAGES } from '../lib/translateService';
+import {
+  SUPPORTED_TARGET_LANGUAGES,
+  SAMPLE_TRANSLATIONS,
+  translateText,
+} from '../lib/translateService';
 import { formatTimestamp } from '../utils/captionParser';
 import { isAndroidNativeTTS } from '../lib/ttsEngine';
+import { LanguageSettingsModal } from './LanguageSettingsModal';
 
 interface SubtitlesTeacherPanelProps {
   cues: CaptionCue[];
   playerRef: React.RefObject<YouTubePlayerHandle | null>;
   onLoadCues?: (cues: CaptionCue[]) => void;
+  onOpenLibrary?: () => void;
+  onFetchSubtitles?: () => void;
+  isFetchingSubtitles?: boolean;
+  fetchError?: string | null;
 }
 
 const DEFAULT_TARGET_LANGUAGES: TargetLanguage[] = [
@@ -55,7 +68,7 @@ const DEFAULT_TARGET_LANGUAGES: TargetLanguage[] = [
     code: 'es',
     name: 'Spanish (Español)',
     ttsRate: 1.0,
-    enabled: true,
+    enabled: false,
     color: '#ef4444',
   },
   {
@@ -63,23 +76,21 @@ const DEFAULT_TARGET_LANGUAGES: TargetLanguage[] = [
     code: 'en',
     name: 'English',
     ttsRate: 1.0,
-    enabled: true,
+    enabled: false,
     color: '#3b82f6',
   },
 ];
 
-const SAMPLE_TEACHER_CUES: CaptionCue[] = [
-  { id: 'cue-1', start: 0.0, duration: 3.2, text: 'Hello, welcome to this video lesson!' },
-  { id: 'cue-2', start: 3.5, duration: 3.0, text: 'Today we are practicing subtitles with automatic translation.' },
-  { id: 'cue-3', start: 6.8, duration: 3.5, text: 'The player will automatically pause and speak each translation.' },
-  { id: 'cue-4', start: 10.5, duration: 3.2, text: 'You can customize the speaking speed and order of languages.' },
-  { id: 'cue-5', start: 14.0, duration: 3.0, text: 'Enjoy practicing and learning new languages easily!' },
-];
+export const SAMPLE_TEACHER_CUES: CaptionCue[] = [];
 
 export const SubtitlesTeacherPanel: React.FC<SubtitlesTeacherPanelProps> = ({
   cues,
   playerRef,
   onLoadCues,
+  onOpenLibrary,
+  onFetchSubtitles,
+  isFetchingSubtitles = false,
+  fetchError = null,
 }) => {
   const [targetLanguages, setTargetLanguages] = useState<TargetLanguage[]>(() => {
     try {
@@ -87,7 +98,6 @@ export const SubtitlesTeacherPanel: React.FC<SubtitlesTeacherPanelProps> = ({
       if (saved) {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          // Ensure it has Italian and Arabic available
           const hasIt = parsed.some((l: any) => l.code === 'it');
           const hasAr = parsed.some((l: any) => l.code === 'ar');
           if (hasIt && hasAr) return parsed;
@@ -98,6 +108,9 @@ export const SubtitlesTeacherPanel: React.FC<SubtitlesTeacherPanelProps> = ({
   });
 
   const [availableVoices, setAvailableVoices] = useState<SpeechSynthesisVoice[]>([]);
+  const [isLangSettingsOpen, setIsLangSettingsOpen] = useState<boolean>(false);
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [tableTranslations, setTableTranslations] = useState<Record<string, Record<string, string>>>({});
 
   useEffect(() => {
     if (typeof window === 'undefined' || !window.speechSynthesis) return;
@@ -139,11 +152,7 @@ export const SubtitlesTeacherPanel: React.FC<SubtitlesTeacherPanelProps> = ({
   });
 
   const [sourceLang, setSourceLang] = useState<string>('auto');
-  const [selectedNewLang, setSelectedNewLang] = useState<string>('fr');
-  const [isAddingLang, setIsAddingLang] = useState<boolean>(false);
-  const [searchQuery, setSearchQuery] = useState<string>('');
 
-  // Persist languages and play order
   useEffect(() => {
     try {
       localStorage.setItem('yt_teacher_languages_v1', JSON.stringify(targetLanguages));
@@ -156,7 +165,7 @@ export const SubtitlesTeacherPanel: React.FC<SubtitlesTeacherPanelProps> = ({
     } catch {}
   }, [playOrder]);
 
-  const effectiveCues = cues && cues.length > 0 ? cues : [];
+  const effectiveCues = cues;
 
   const {
     activeCueIndex,
@@ -165,7 +174,6 @@ export const SubtitlesTeacherPanel: React.FC<SubtitlesTeacherPanelProps> = ({
     currentTTSLang,
     currentTTSText,
     translations,
-    ttsEngineType,
     startSync,
     pauseSync,
     jumpToCue,
@@ -180,63 +188,100 @@ export const SubtitlesTeacherPanel: React.FC<SubtitlesTeacherPanelProps> = ({
     playOrder,
   });
 
-  // Reordering helpers (Move Up / Move Down)
+  // Pre-fetch translations for visible cues to ensure multi-column table is populated
+  useEffect(() => {
+    if (!effectiveCues || effectiveCues.length === 0) return;
+    const enabled = targetLanguages.filter((l) => l.enabled);
+    enabled.forEach((lang) => {
+      effectiveCues.forEach((cue) => {
+        // Sample translations fast-lookup
+        const sampleMatch = SAMPLE_TRANSLATIONS[cue.text]?.[lang.code];
+        if (sampleMatch) {
+          setTableTranslations((prev) => ({
+            ...prev,
+            [cue.id]: { ...(prev[cue.id] || {}), [lang.code]: sampleMatch },
+          }));
+        } else if (!tableTranslations[cue.id]?.[lang.code] && !translations[cue.id]?.[lang.code]) {
+          translateText(cue.text, sourceLang, lang.code).then((res) => {
+            if (res) {
+              setTableTranslations((prev) => ({
+                ...prev,
+                [cue.id]: { ...(prev[cue.id] || {}), [lang.code]: res },
+              }));
+            }
+          });
+        }
+      });
+    });
+  }, [effectiveCues, targetLanguages, sourceLang]);
+
+  const getCueTranslation = (cue: CaptionCue, langCode: string): string => {
+    if (translations[cue.id]?.[langCode]) return translations[cue.id][langCode];
+    if (tableTranslations[cue.id]?.[langCode]) return tableTranslations[cue.id][langCode];
+    if (SAMPLE_TRANSLATIONS[cue.text]?.[langCode]) return SAMPLE_TRANSLATIONS[cue.text][langCode];
+    return '';
+  };
+
+  const toggleLanguage = (id: string) => {
+    setTargetLanguages((prev) =>
+      prev.map((lang) => (lang.id === id ? { ...lang, enabled: !lang.enabled } : lang))
+    );
+  };
+
+  const updateLanguageRate = (id: string, rate: number) => {
+    setTargetLanguages((prev) =>
+      prev.map((lang) => (lang.id === id ? { ...lang, ttsRate: Math.max(0.5, Math.min(1.5, rate)) } : lang))
+    );
+  };
+
   const moveLanguageUp = (index: number) => {
-    if (index === 0) return;
+    if (index <= 0) return;
     setTargetLanguages((prev) => {
-      const copy = [...prev];
-      const temp = copy[index - 1];
-      copy[index - 1] = copy[index];
-      copy[index] = temp;
-      return copy;
+      const arr = [...prev];
+      const temp = arr[index - 1];
+      arr[index - 1] = arr[index];
+      arr[index] = temp;
+      return arr;
     });
   };
 
   const moveLanguageDown = (index: number) => {
     if (index >= targetLanguages.length - 1) return;
     setTargetLanguages((prev) => {
-      const copy = [...prev];
-      const temp = copy[index + 1];
-      copy[index + 1] = copy[index];
-      copy[index] = temp;
-      return copy;
+      const arr = [...prev];
+      const temp = arr[index + 1];
+      arr[index + 1] = arr[index];
+      arr[index] = temp;
+      return arr;
     });
-  };
-
-  const updateLanguageRate = (id: string, newRate: number) => {
-    setTargetLanguages((prev) =>
-      prev.map((lang) => (lang.id === id ? { ...lang, ttsRate: Math.max(0.4, Math.min(2.5, newRate)) } : lang))
-    );
-  };
-
-  const toggleLanguageEnabled = (id: string) => {
-    setTargetLanguages((prev) =>
-      prev.map((lang) => (lang.id === id ? { ...lang, enabled: !lang.enabled } : lang))
-    );
   };
 
   const removeLanguage = (id: string) => {
     setTargetLanguages((prev) => prev.filter((lang) => lang.id !== id));
   };
 
+  const [isAddingLang, setIsAddingLang] = useState(false);
+  const [selectedNewLang, setSelectedNewLang] = useState('fr');
+
   const handleAddLanguage = () => {
-    const info = SUPPORTED_TARGET_LANGUAGES.find((l) => l.code === selectedNewLang);
-    if (!info) return;
+    const meta = SUPPORTED_TARGET_LANGUAGES.find((l) => l.code === selectedNewLang);
+    if (!meta) return;
 
-    if (targetLanguages.some((l) => l.code === info.code)) {
-      return;
+    if (targetLanguages.some((l) => l.code === meta.code)) {
+      setTargetLanguages((prev) =>
+        prev.map((l) => (l.code === meta.code ? { ...l, enabled: true } : l))
+      );
+    } else {
+      const newLang: TargetLanguage = {
+        id: `lang-${meta.code}-${Date.now()}`,
+        code: meta.code,
+        name: meta.name,
+        ttsRate: 1.0,
+        enabled: true,
+        color: '#6366f1',
+      };
+      setTargetLanguages((prev) => [...prev, newLang]);
     }
-
-    const newLang: TargetLanguage = {
-      id: `lang-${info.code}-${Date.now()}`,
-      code: info.code,
-      name: info.name,
-      ttsRate: 1.0,
-      enabled: true,
-      color: info.color,
-    };
-
-    setTargetLanguages((prev) => [...prev, newLang]);
     setIsAddingLang(false);
   };
 
@@ -257,7 +302,6 @@ export const SubtitlesTeacherPanel: React.FC<SubtitlesTeacherPanelProps> = ({
       const parsedCues: CaptionCue[] = [];
       let idx = 1;
 
-      // Simple SRT parser
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i].trim();
         if (line.includes('-->')) {
@@ -307,632 +351,456 @@ export const SubtitlesTeacherPanel: React.FC<SubtitlesTeacherPanelProps> = ({
       ? effectiveCues[0]
       : null;
 
+  const enabledTargetLangs = useMemo(
+    () => targetLanguages.filter((l) => l.enabled),
+    [targetLanguages]
+  );
+
+  const filteredCues = useMemo(() => {
+    if (!searchQuery.trim()) return effectiveCues;
+    return effectiveCues.filter((cue) =>
+      cue.text.toLowerCase().includes(searchQuery.toLowerCase())
+    );
+  }, [effectiveCues, searchQuery]);
+
   return (
     <div className="w-full rounded-2xl bg-neutral-900/90 border border-neutral-800 shadow-xl overflow-hidden flex flex-col">
-      {/* Top Banner & Mode Header */}
+      {/* 1. Header & Controls Bar */}
       <div className="p-4 sm:p-5 border-b border-neutral-800 flex flex-wrap items-center justify-between gap-3 bg-neutral-900">
         <div className="flex items-center gap-3">
-          <div className="p-2.5 rounded-xl bg-gradient-to-br from-indigo-500/20 to-purple-500/20 text-indigo-400 border border-indigo-500/30">
+          <div className="p-2.5 rounded-xl bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
             <BookOpen className="w-5 h-5" />
           </div>
           <div>
             <h2 className="text-base font-semibold text-neutral-100 flex items-center gap-2">
-              <span>Subtitles Teacher &amp; Time-Sync TTS</span>
-              <span className="px-2 py-0.5 text-[11px] font-medium rounded-full bg-indigo-950/80 text-indigo-300 border border-indigo-800/40">
-                Interactive Learning
-              </span>
+              <span>Language Learning Session</span>
+              {effectiveCues.length > 0 && (
+                <span className="px-2 py-0.5 text-[11px] font-medium rounded-full bg-emerald-950/80 text-emerald-300 border border-emerald-800/40">
+                  {effectiveCues.length} Cues Ready
+                </span>
+              )}
             </h2>
             <p className="text-xs text-neutral-400 mt-0.5">
-              Pauses YouTube video at each subtitle record, speaks target translations via TTS, and automatically resumes playback.
+              Synchronized video segments with spoken translations &amp; multi-column study view.
             </p>
           </div>
         </div>
 
-        {/* TTS Engine Detection Status */}
+        {/* Right Header Actions */}
         <div className="flex items-center gap-2">
-          {isAndroidNativeTTS() ? (
-            <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-950/70 border border-emerald-800/50 text-emerald-400 text-xs font-medium">
-              <Smartphone className="w-3.5 h-3.5" />
-              <span>Android Native TTS Active</span>
-            </div>
-          ) : (
-            <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-blue-950/60 border border-blue-800/40 text-blue-300 text-xs font-medium">
-              <Globe className="w-3.5 h-3.5" />
-              <span>Web Speech TTS Active</span>
-            </div>
-          )}
+          {/* Target Languages Chips preview */}
+          <div className="hidden sm:flex items-center gap-1.5 mr-1">
+            {enabledTargetLangs.map((lang) => (
+              <span
+                key={lang.id}
+                className="px-2 py-0.5 rounded-md text-[11px] font-medium bg-neutral-800 text-neutral-300 border border-neutral-700"
+              >
+                {lang.name.split(' ')[0]} ({lang.ttsRate}x)
+              </span>
+            ))}
+          </div>
+
+          <button
+            type="button"
+            id="open-language-settings-button"
+            data-testid="open-language-settings-button"
+            onClick={() => setIsLangSettingsOpen(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold bg-neutral-800 hover:bg-neutral-700 text-neutral-200 border border-neutral-700 transition active:scale-95"
+            title="Configure target languages and speaking speed"
+          >
+            <Settings2 className="w-3.5 h-3.5 text-indigo-400" />
+            <span>Languages &amp; Speed Settings</span>
+          </button>
         </div>
       </div>
 
-      {/* Main Interactive Control Center */}
-      <div className="p-4 sm:p-5 flex flex-col gap-5">
-        {/* Sync Controls Toolbar */}
-        <div className="flex flex-wrap items-center justify-between gap-3 p-3.5 rounded-xl bg-neutral-950/60 border border-neutral-800/80">
-          {/* Master Play / Pause / Skip */}
-          <div className="flex items-center gap-2">
-            <button
-              id="sync-teacher-play-button"
-              type="button"
-              disabled={effectiveCues.length === 0}
-              onClick={() => {
-                if (isSyncActive) {
-                  pauseSync();
-                } else {
-                  startSync();
-                }
-              }}
-              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold transition shadow-md disabled:opacity-40 disabled:cursor-not-allowed ${
-                isSyncActive
-                  ? 'bg-amber-600 hover:bg-amber-500 text-white'
-                  : 'bg-red-600 hover:bg-red-500 text-white'
-              }`}
-            >
-              {isSyncActive ? (
-                <>
-                  <Pause className="w-4 h-4 fill-current" />
-                  <span>Pause Teacher Sync</span>
-                </>
-              ) : (
-                <>
-                  <Play className="w-4 h-4 fill-current" />
-                  <span>Start Teacher Sync</span>
-                </>
+      {/* 2. Main Workspace Area */}
+      <div className="p-4 sm:p-5 flex flex-col gap-4">
+        {/* Step 2: In case subtitles are NOT yet cached */}
+        {effectiveCues.length === 0 ? (
+          <div
+            id="subtitles-not-cached-instruction"
+            className="p-8 rounded-2xl bg-neutral-950/80 border border-neutral-800 flex flex-col items-center text-center gap-4 animate-fadeIn shadow-lg"
+          >
+            <div className="relative">
+              <div className="w-16 h-16 rounded-2xl bg-red-500/10 border border-red-500/30 flex items-center justify-center text-red-400 shadow-lg shadow-red-500/5">
+                <Subtitles className="w-8 h-8" />
+              </div>
+              <span className="absolute -bottom-1 -right-1 px-2 py-0.5 rounded bg-red-600 text-white font-bold text-[10px] tracking-wider shadow">
+                CC
+              </span>
+            </div>
+
+            <div className="max-w-md">
+              <h3 className="text-base font-semibold text-neutral-100">
+                Subtitles Not Yet Cached
+              </h3>
+              <p className="text-xs text-neutral-400 mt-1 leading-relaxed">
+                Click below or use the &quot;Fetch Subtitles / CC&quot; button above to fetch and synchronize subtitles for this video to start your learning session.
+              </p>
+            </div>
+
+            {fetchError && (
+              <div className="px-3.5 py-2 rounded-xl bg-red-950/50 border border-red-800/60 text-red-300 text-xs max-w-md">
+                {fetchError}
+              </div>
+            )}
+
+            <div className="flex flex-wrap items-center justify-center gap-3 mt-1">
+              {onFetchSubtitles && (
+                <button
+                  type="button"
+                  id="fetch-subtitles-action-button"
+                  data-testid="fetch-subtitles-action-button"
+                  onClick={onFetchSubtitles}
+                  disabled={isFetchingSubtitles}
+                  className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs sm:text-sm font-semibold shadow-lg shadow-red-600/20 active:scale-95 transition disabled:opacity-60"
+                >
+                  {isFetchingSubtitles ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Subtitles className="w-4 h-4" />
+                  )}
+                  <span>
+                    {isFetchingSubtitles
+                      ? 'Fetching Subtitles from Video...'
+                      : 'Fetch Subtitles for this Video'}
+                  </span>
+                </button>
               )}
-            </button>
 
-            <button
-              type="button"
-              disabled={effectiveCues.length === 0 || activeCueIndex <= 0}
-              onClick={prevCue}
-              className="p-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-neutral-300 hover:text-white border border-neutral-700 transition disabled:opacity-40 disabled:cursor-not-allowed"
-              title="Previous Subtitle Cue"
-            >
-              <SkipBack className="w-4 h-4" />
-            </button>
-
-            <button
-              type="button"
-              disabled={effectiveCues.length === 0 || activeCueIndex >= effectiveCues.length - 1}
-              onClick={nextCue}
-              className="p-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-neutral-300 hover:text-white border border-neutral-700 transition disabled:opacity-40 disabled:cursor-not-allowed"
-              title="Next Subtitle Cue"
-            >
-              <SkipForward className="w-4 h-4" />
-            </button>
-          </div>
-
-          {/* Real-time Status Indicator */}
-          <div className="flex items-center gap-3 text-xs">
-            {effectiveCues.length > 0 ? (
-              <span className="text-neutral-400 font-mono">
-                Cue <span className="text-neutral-100 font-semibold">{activeCueIndex >= 0 ? activeCueIndex + 1 : 1}</span> of {effectiveCues.length}
-              </span>
-            ) : (
-              <span className="text-amber-400">No subtitles loaded yet</span>
-            )}
-
-            {isSpeaking && currentTTSLang && (
-              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-indigo-950/80 border border-indigo-800/60 text-indigo-300 animate-pulse">
-                <Volume2 className="w-3.5 h-3.5" />
-                <span className="font-medium">
-                  Speaking {targetLanguages.find((l) => l.code === currentTTSLang)?.name || currentTTSLang}
-                </span>
-              </div>
-            )}
-
-            {isSyncActive && !isSpeaking && (
-              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-950/80 border border-emerald-800/60 text-emerald-300">
-                <Radio className="w-3.5 h-3.5 animate-pulse" />
-                <span>Video Clip Playing</span>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Section 1: Play Order & Source Configuration */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {/* Order of playing: Video First vs TTS First */}
-          <div className="p-3.5 rounded-xl bg-neutral-950/40 border border-neutral-800 flex flex-col gap-2">
-            <label className="text-xs font-medium text-neutral-300 flex items-center justify-between">
-              <span className="flex items-center gap-1.5">
-                <Layers className="w-3.5 h-3.5 text-indigo-400" />
-                <span>Segment Playback Order</span>
-              </span>
-              <span className="text-[11px] text-neutral-500 font-mono">sync order</span>
-            </label>
-            <div className="grid grid-cols-2 gap-2 pt-1">
-              <button
-                type="button"
-                id="play-order-video-first-button"
-                data-testid="play-order-video-first-button"
-                onClick={() => setPlayOrder('video_first')}
-                className={`px-3 py-2 rounded-lg text-xs font-medium border transition flex flex-col items-start gap-1 text-left ${
-                  playOrder === 'video_first'
-                    ? 'bg-indigo-600/20 text-indigo-200 border-indigo-500/50 shadow-sm'
-                    : 'bg-neutral-800/60 text-neutral-400 border-neutral-700 hover:text-neutral-200'
-                }`}
-              >
-                <span className="font-semibold flex items-center gap-1">
-                  <span>1. Video First</span>
-                  {playOrder === 'video_first' && <CheckCircle2 className="w-3 h-3 text-indigo-400" />}
-                </span>
-                <span className="text-[10px] text-neutral-400">
-                  Plays clip &rarr; Pauses &rarr; TTS translates &rarr; Resumes
-                </span>
-              </button>
-
-              <button
-                type="button"
-                id="play-order-tts-first-button"
-                data-testid="play-order-tts-first-button"
-                onClick={() => setPlayOrder('tts_first')}
-                className={`px-3 py-2 rounded-lg text-xs font-medium border transition flex flex-col items-start gap-1 text-left ${
-                  playOrder === 'tts_first'
-                    ? 'bg-indigo-600/20 text-indigo-200 border-indigo-500/50 shadow-sm'
-                    : 'bg-neutral-800/60 text-neutral-400 border-neutral-700 hover:text-neutral-200'
-                }`}
-              >
-                <span className="font-semibold flex items-center gap-1">
-                  <span>2. TTS First</span>
-                  {playOrder === 'tts_first' && <CheckCircle2 className="w-3 h-3 text-indigo-400" />}
-                </span>
-                <span className="text-[10px] text-neutral-400">
-                  TTS translates &rarr; Plays video clip &rarr; Next
-                </span>
-              </button>
+              {onOpenLibrary && (
+                <button
+                  type="button"
+                  onClick={onOpenLibrary}
+                  className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-neutral-200 border border-neutral-700 text-xs font-medium transition"
+                >
+                  <FolderHeart className="w-3.5 h-3.5 text-indigo-400" />
+                  <span>Select from My Library</span>
+                </button>
+              )}
             </div>
           </div>
-
-          {/* Subtitle Source & Samples */}
-          <div className="p-3.5 rounded-xl bg-neutral-950/40 border border-neutral-800 flex flex-col justify-between gap-2">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-medium text-neutral-300 flex items-center gap-1.5">
-                <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-                <span>Subtitle Source ({effectiveCues.length} cues)</span>
-              </span>
+        ) : (
+          /* Step 3, 5, 6: Subtitles ARE cached/loaded -> Full Learning Session Workspace */
+          <div className="flex flex-col gap-4">
+            {/* Master Session Toolbar */}
+            <div className="flex flex-wrap items-center justify-between gap-3 p-3.5 rounded-xl bg-neutral-950/70 border border-neutral-800/80">
+              {/* Play / Pause / Skip controls */}
               <div className="flex items-center gap-2">
                 <button
+                  id="sync-teacher-play-button"
                   type="button"
-                  id="load-sample-cues-button"
-                  data-testid="load-sample-cues-button"
-                  onClick={handleLoadSample}
-                  className="text-[11px] px-2.5 py-1 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-200 border border-neutral-700 transition"
-                  title="Load test practice subtitles"
+                  data-testid="sync-teacher-play-button"
+                  onClick={() => {
+                    if (isSyncActive) {
+                      pauseSync();
+                    } else {
+                      startSync();
+                    }
+                  }}
+                  className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold transition shadow-md ${
+                    isSyncActive
+                      ? 'bg-amber-600 hover:bg-amber-500 text-white'
+                      : 'bg-indigo-600 hover:bg-indigo-500 text-white'
+                  }`}
                 >
-                  Load Sample Cues
+                  {isSyncActive ? (
+                    <>
+                      <Pause className="w-4 h-4 fill-current" />
+                      <span>Pause Teacher Sync</span>
+                    </>
+                  ) : (
+                    <>
+                      <Play className="w-4 h-4 fill-current" />
+                      <span>Start Teacher Sync</span>
+                    </>
+                  )}
                 </button>
-                <label className="cursor-pointer text-[11px] px-2 py-1 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 border border-neutral-700 transition flex items-center gap-1">
-                  <Upload className="w-3 h-3" />
-                  <span>Upload .SRT</span>
-                  <input
-                    type="file"
-                    accept=".srt,.vtt,.txt"
-                    onChange={handleFileUpload}
-                    className="hidden"
-                  />
-                </label>
-              </div>
-            </div>
 
-            <div className="text-[11px] text-neutral-400 bg-neutral-900/80 p-2 rounded-lg border border-neutral-800 flex items-center justify-between">
-              <span>Detected from: {cues && cues.length > 0 ? 'YouTube TimedText / Intercepted Stream' : 'None yet (click Load Sample or turn on Captions)'}</span>
-              {effectiveCues.length > 0 && (
-                <span className="text-emerald-400 font-medium">Ready to Sync</span>
-              )}
-            </div>
-          </div>
-        </div>
-
-        {/* Section 2: Target Translation Languages & Per-Language TTS Rate & Playback Order */}
-        <div className="p-4 rounded-xl bg-neutral-950/40 border border-neutral-800 flex flex-col gap-3">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div>
-              <h3 className="text-sm font-semibold text-neutral-200 flex items-center gap-2">
-                <span>Target Translation Languages</span>
-                <span className="text-[11px] text-neutral-400 font-normal">
-                  (Played sequentially in the order listed below)
-                </span>
-              </h3>
-              <p className="text-xs text-neutral-400 mt-0.5">
-                Configure target languages, individual speaking rates, voice selection, and playback sequence.
-              </p>
-            </div>
-
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                id="preset-italian-arabic-button"
-                data-testid="preset-italian-arabic-button"
-                onClick={() => {
-                  setTargetLanguages([
-                    {
-                      id: 'lang-it',
-                      code: 'it',
-                      name: 'Italian (Italiano)',
-                      ttsRate: 1.0,
-                      enabled: true,
-                      color: '#10b981',
-                    },
-                    {
-                      id: 'lang-ar',
-                      code: 'ar',
-                      name: 'Arabic (العربية)',
-                      ttsRate: 1.0,
-                      enabled: true,
-                      color: '#14b8a6',
-                    },
-                  ]);
-                }}
-                className="text-[11px] px-2.5 py-1.5 rounded-lg bg-indigo-950/70 hover:bg-indigo-900/90 text-indigo-300 border border-indigo-800/60 transition flex items-center gap-1 font-medium"
-                title="Quick Setup: Italian & Arabic for language practice"
-              >
-                <span>Preset: Italian + Arabic</span>
-              </button>
-
-              {isAddingLang ? (
-                <div className="flex items-center gap-2">
-                  <select
-                    id="add-target-language-select"
-                    data-testid="add-target-language-select"
-                    value={selectedNewLang}
-                    onChange={(e) => setSelectedNewLang(e.target.value)}
-                    className="text-xs bg-neutral-800 text-neutral-200 border border-neutral-700 rounded-lg px-2.5 py-1.5 focus:outline-none focus:border-indigo-500"
-                  >
-                    {SUPPORTED_TARGET_LANGUAGES.filter(
-                      (l) => !targetLanguages.some((tl) => tl.code === l.code)
-                    ).map((lang) => (
-                      <option key={lang.code} value={lang.code}>
-                        {lang.name}
-                      </option>
-                    ))}
-                  </select>
-                  <button
-                    type="button"
-                    id="confirm-add-target-language-button"
-                    data-testid="confirm-add-target-language-button"
-                    onClick={handleAddLanguage}
-                    className="px-2.5 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium transition"
-                  >
-                    Add
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setIsAddingLang(false)}
-                    className="px-2 py-1.5 rounded-lg bg-neutral-800 text-neutral-400 hover:text-neutral-200 text-xs transition"
-                  >
-                    Cancel
-                  </button>
-                </div>
-              ) : (
                 <button
                   type="button"
-                  id="add-target-language-button"
-                  data-testid="add-target-language-button"
-                  onClick={() => setIsAddingLang(true)}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-200 text-xs font-medium border border-neutral-700 transition"
+                  disabled={activeCueIndex <= 0}
+                  onClick={prevCue}
+                  className="p-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-neutral-300 hover:text-white border border-neutral-700 transition disabled:opacity-40 disabled:cursor-not-allowed"
+                  title="Previous Timeframe"
                 >
-                  <Plus className="w-3.5 h-3.5" />
-                  <span>Add Target Language</span>
+                  <SkipBack className="w-4 h-4" />
                 </button>
-              )}
-            </div>
-          </div>
 
-          {/* List of Target Languages with Reordering, Rate Sliders, and Voice Dropdown */}
-          <div className="flex flex-col gap-2.5 mt-1" id="target-languages-list" data-testid="target-languages-list">
-            {targetLanguages.map((lang, index) => (
-              <div
-                key={lang.id}
-                id={`target-language-card-${lang.code}`}
-                data-testid={`target-language-card-${lang.code}`}
-                className={`p-3 rounded-xl border transition flex flex-col lg:flex-row lg:items-center justify-between gap-3 ${
-                  lang.enabled
-                    ? currentTTSLang === lang.code
-                      ? 'bg-indigo-950/30 border-indigo-500/60 ring-1 ring-indigo-500/40'
-                      : 'bg-neutral-900 border-neutral-800'
-                    : 'bg-neutral-900/40 border-neutral-800/40 opacity-60'
-                }`}
-              >
-                {/* Left: Sequence badge, Enable Checkbox, Language Label & Reorder Arrows */}
-                <div className="flex items-center gap-3">
-                  {/* Sequence Order Badge */}
-                  <span className="flex items-center justify-center w-6 h-6 rounded-full bg-neutral-800 text-xs font-bold text-neutral-300 font-mono">
-                    {index + 1}
-                  </span>
+                <button
+                  type="button"
+                  disabled={activeCueIndex >= effectiveCues.length - 1}
+                  onClick={nextCue}
+                  className="p-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-neutral-300 hover:text-white border border-neutral-700 transition disabled:opacity-40 disabled:cursor-not-allowed"
+                  title="Next Timeframe"
+                >
+                  <SkipForward className="w-4 h-4" />
+                </button>
+              </div>
 
-                  {/* Reorder Buttons: Up & Down */}
-                  <div className="flex flex-col gap-0.5">
-                    <button
-                      type="button"
-                      disabled={index === 0}
-                      onClick={() => moveLanguageUp(index)}
-                      className="p-1 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-400 hover:text-neutral-200 disabled:opacity-30 disabled:cursor-not-allowed transition"
-                      title="Move Up in Playback Sequence"
-                    >
-                      <ArrowUp className="w-3 h-3" />
-                    </button>
-                    <button
-                      type="button"
-                      disabled={index === targetLanguages.length - 1}
-                      onClick={() => moveLanguageDown(index)}
-                      className="p-1 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-400 hover:text-neutral-200 disabled:opacity-30 disabled:cursor-not-allowed transition"
-                      title="Move Down in Playback Sequence"
-                    >
-                      <ArrowDown className="w-3 h-3" />
-                    </button>
-                  </div>
+              {/* Status Indicator */}
+              <div className="flex items-center gap-3 text-xs">
+                <span className="text-neutral-400 font-mono">
+                  Cue <span className="text-neutral-100 font-semibold">{activeCueIndex >= 0 ? activeCueIndex + 1 : 1}</span> of {effectiveCues.length}
+                </span>
 
-                  {/* Toggle enable */}
-                  <input
-                    type="checkbox"
-                    checked={lang.enabled}
-                    onChange={() => toggleLanguageEnabled(lang.id)}
-                    className="w-4 h-4 rounded text-indigo-600 bg-neutral-800 border-neutral-700 focus:ring-0 cursor-pointer"
-                    title={lang.enabled ? 'Disable Language' : 'Enable Language'}
-                  />
-
-                  {/* Language Title & Code */}
-                  <div>
-                    <div className="text-xs font-semibold text-neutral-200 flex items-center gap-2">
-                      <span>{lang.name}</span>
-                      <span className="px-1.5 py-0.2 rounded bg-neutral-800 text-neutral-400 font-mono text-[10px]">
-                        {lang.code}
-                      </span>
-                    </div>
-                    <div className="text-[11px] text-neutral-400">
-                      Sequential TTS Voice {index + 1}
-                    </div>
-                  </div>
-                </div>
-
-                {/* Right: Voice Selection, TTS Playback Rate Slider & Actions */}
-                <div className="flex flex-wrap items-center gap-3 sm:gap-4">
-                  {/* Voice Selection Dropdown */}
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-[11px] text-neutral-400 whitespace-nowrap">Voice:</span>
-                    <select
-                      id={`tts-voice-select-${lang.code}`}
-                      data-testid={`tts-voice-select-${lang.code}`}
-                      value={lang.voice || ''}
-                      disabled={!lang.enabled}
-                      onChange={(e) => updateLanguageVoice(lang.id, e.target.value)}
-                      className="text-xs bg-neutral-800 text-neutral-200 border border-neutral-700 rounded px-2 py-1 focus:outline-none focus:border-indigo-500 max-w-[135px] truncate"
-                    >
-                      <option value="">Default Voice</option>
-                      {getVoicesForLang(lang.code).length > 0 ? (
-                        getVoicesForLang(lang.code).map((v) => (
-                          <option key={v.name} value={v.name}>
-                            {v.name}
-                          </option>
-                        ))
-                      ) : (
-                        <>
-                          <option value={`System-${lang.code}-1`}>Natural {lang.code.toUpperCase()} 1</option>
-                          <option value={`System-${lang.code}-2`}>Studio {lang.code.toUpperCase()} 2</option>
-                        </>
-                      )}
-                    </select>
-                  </div>
-
-                  {/* TTS Rate Controls */}
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-[11px] text-neutral-400 whitespace-nowrap">Rate:</span>
-                    <input
-                      id={`tts-rate-slider-${lang.code}`}
-                      data-testid={`tts-rate-slider-${lang.code}`}
-                      type="range"
-                      min="0.5"
-                      max="2.0"
-                      step="0.1"
-                      value={lang.ttsRate}
-                      disabled={!lang.enabled}
-                      onChange={(e) => updateLanguageRate(lang.id, parseFloat(e.target.value))}
-                      className="w-20 sm:w-24 accent-indigo-500 cursor-pointer"
-                    />
-                    <span
-                      id={`tts-rate-value-${lang.code}`}
-                      data-testid={`tts-rate-value-${lang.code}`}
-                      className="text-xs font-mono font-medium text-indigo-300 w-9 text-right"
-                    >
-                      {lang.ttsRate.toFixed(1)}x
+                {isSpeaking && currentTTSLang && (
+                  <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-indigo-950/80 border border-indigo-800/60 text-indigo-300 animate-pulse">
+                    <Volume2 className="w-3.5 h-3.5" />
+                    <span className="font-medium">
+                      Speaking {targetLanguages.find((l) => l.code === currentTTSLang)?.name || currentTTSLang}
                     </span>
                   </div>
+                )}
 
-                  {/* Test Speak Button */}
-                  <button
-                    type="button"
-                    id={`test-speak-button-${lang.code}`}
-                    data-testid={`test-speak-button-${lang.code}`}
-                    onClick={() => {
-                      const testCue = currentCue || effectiveCues[0] || {
-                        id: 'test',
-                        start: 0,
-                        duration: 2,
-                        text: 'Hello, testing speech translation.',
-                      };
-                      testSpeakLang(testCue, lang);
-                    }}
-                    className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-200 hover:text-white border border-neutral-700 text-xs transition"
-                    title="Test Voice Preview"
-                  >
-                    <Volume2 className="w-3.5 h-3.5" />
-                    <span className="hidden sm:inline">Test</span>
-                  </button>
-
-                  {/* Remove Button */}
-                  {targetLanguages.length > 1 && (
-                    <button
-                      type="button"
-                      onClick={() => removeLanguage(lang.id)}
-                      className="p-1.5 rounded-lg text-neutral-400 hover:text-red-400 hover:bg-neutral-800 transition"
-                      title="Remove Language"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Section 3: Active Subtitle Preview & Full Segment Cue List */}
-        <div className="flex flex-col gap-3">
-          {/* Active Highlight Card */}
-          {currentCue && (
-            <div
-              id="active-subtitle-card"
-              data-testid="active-subtitle-card"
-              className="p-4 rounded-xl bg-gradient-to-r from-neutral-900 to-indigo-950/20 border border-indigo-500/30 flex flex-col gap-2"
-            >
-              <div className="flex items-center justify-between text-xs text-neutral-400">
-                <span className="flex items-center gap-1.5 font-mono text-indigo-300">
-                  <Clock className="w-3.5 h-3.5" />
-                  <span>
-                    {formatTimestamp(currentCue.start)} &rarr; {formatTimestamp(currentCue.start + (currentCue.duration || 2))}
-                  </span>
-                </span>
-                <span className="px-2 py-0.5 rounded bg-indigo-900/50 text-indigo-300 font-semibold text-[11px]">
-                  Active Segment
-                </span>
+                {isSyncActive && !isSpeaking && (
+                  <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-950/80 border border-emerald-800/60 text-emerald-300">
+                    <Radio className="w-3.5 h-3.5 animate-pulse" />
+                    <span>Video Clip Playing</span>
+                  </div>
+                )}
               </div>
 
-              {/* Original Subtitle Text */}
-              <p
-                id="active-subtitle-cue-text"
-                data-testid="active-subtitle-cue-text"
-                className="text-sm font-medium text-neutral-100 leading-relaxed"
+              {/* Filter search input */}
+              <div className="w-full sm:w-auto">
+                <input
+                  type="text"
+                  placeholder="Filter subtitles..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="w-full sm:w-44 text-xs bg-neutral-900 text-neutral-200 border border-neutral-700 rounded-lg px-2.5 py-1.5 focus:outline-none focus:border-indigo-500"
+                />
+              </div>
+            </div>
+
+            {/* Active Subtitle Preview Card */}
+            {currentCue && (
+              <div
+                id="active-subtitle-card"
+                data-testid="active-subtitle-card"
+                className="p-4 rounded-xl bg-gradient-to-r from-neutral-950 via-neutral-900 to-indigo-950/30 border border-indigo-500/30 flex flex-col gap-2 shadow-inner"
               >
-                "{currentCue.text}"
-              </p>
-
-              {/* Live Translations for Active Cue */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1" id="active-translations-grid" data-testid="active-translations-grid">
-                {targetLanguages.filter((l) => l.enabled).map((lang) => {
-                  const translated = translations[currentCue.id]?.[lang.code] || 'Translating…';
-                  const isCurrentLangSpeaking = isSpeaking && currentTTSLang === lang.code;
-
-                  return (
-                    <div
-                      key={lang.id}
-                      id={`active-translation-${lang.code}`}
-                      data-testid={`active-translation-${lang.code}`}
-                      className={`p-2 rounded-lg text-xs border transition ${
-                        isCurrentLangSpeaking
-                          ? 'bg-indigo-900/40 border-indigo-400 text-indigo-200'
-                          : 'bg-neutral-950/60 border-neutral-800 text-neutral-300'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between mb-1">
-                        <span className="font-semibold text-[11px] text-neutral-400">{lang.name}:</span>
-                        {isCurrentLangSpeaking && (
-                          <span
-                            data-testid={`speaking-indicator-${lang.code}`}
-                            className="flex items-center gap-1 text-[10px] text-indigo-300 font-medium"
-                          >
-                            <Volume2 className="w-3 h-3 animate-pulse" />
-                            Speaking
-                          </span>
-                        )}
-                      </div>
-                      <p data-testid={`translation-text-${lang.code}`} className="text-neutral-200">{translated}</p>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
-          {/* Search & All Cues Interactive Table */}
-          <div className="flex flex-col gap-2">
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-xs font-semibold text-neutral-300">
-                All Subtitle Segments ({effectiveCues.length})
-              </span>
-              <input
-                type="text"
-                placeholder="Filter subtitles..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="text-xs bg-neutral-950 text-neutral-200 border border-neutral-800 rounded-lg px-2.5 py-1 w-44 focus:outline-none focus:border-indigo-500"
-              />
-            </div>
-
-            <div className="max-h-56 overflow-y-auto rounded-xl border border-neutral-800 bg-neutral-950/60 divide-y divide-neutral-900">
-              {effectiveCues.length === 0 ? (
-                <div className="p-6 text-center text-xs text-neutral-500 flex flex-col items-center gap-2">
-                  <span>No subtitle segments currently loaded.</span>
-                  <button
-                    type="button"
-                    onClick={handleLoadSample}
-                    className="px-3 py-1.5 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-xs transition"
-                  >
-                    Load Sample Practice Cues
-                  </button>
+                <div className="flex items-center justify-between text-xs text-neutral-400">
+                  <span className="flex items-center gap-1.5 font-mono text-indigo-300">
+                    <Clock className="w-3.5 h-3.5" />
+                    <span>
+                      {formatTimestamp(currentCue.start)} &rarr;{' '}
+                      {formatTimestamp(currentCue.start + (currentCue.duration || 2.5))}
+                    </span>
+                  </span>
+                  <span className="px-2 py-0.5 rounded bg-indigo-900/60 text-indigo-200 font-semibold text-[11px] border border-indigo-700/50">
+                    Active Timeframe
+                  </span>
                 </div>
-              ) : (
-                effectiveCues
-                  .filter((cue) =>
-                    cue.text.toLowerCase().includes(searchQuery.toLowerCase())
-                  )
-                  .map((cue, idx) => {
-                    const isSelected = activeCueIndex === idx;
+
+                <p
+                  id="active-subtitle-cue-text"
+                  data-testid="active-subtitle-cue-text"
+                  className="text-sm font-medium text-neutral-100 leading-relaxed"
+                >
+                  "{currentCue.text}"
+                </p>
+
+                {/* Active Translations Grid */}
+                <div
+                  className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1"
+                  id="active-translations-grid"
+                  data-testid="active-translations-grid"
+                >
+                  {enabledTargetLangs.map((lang) => {
+                    const translated = getCueTranslation(currentCue, lang.code);
+                    const isCurrentLangSpeaking = isSpeaking && currentTTSLang === lang.code;
 
                     return (
                       <div
-                        key={cue.id}
-                        id={`subtitle-cue-row-${idx}`}
-                        data-testid={`subtitle-cue-row-${idx}`}
-                        data-cue-id={cue.id}
-                        onClick={() => jumpToCue(idx)}
-                        className={`p-2.5 flex items-start justify-between gap-3 text-xs cursor-pointer transition ${
-                          isSelected
-                            ? 'bg-indigo-950/40 text-indigo-200'
-                            : 'hover:bg-neutral-900/70 text-neutral-300'
+                        key={lang.id}
+                        id={`active-translation-${lang.code}`}
+                        data-testid={`active-translation-${lang.code}`}
+                        className={`p-2.5 rounded-lg text-xs border transition ${
+                          isCurrentLangSpeaking
+                            ? 'bg-indigo-900/40 border-indigo-400 text-indigo-200'
+                            : 'bg-neutral-950/60 border-neutral-800 text-neutral-300'
                         }`}
                       >
-                        <div className="flex items-start gap-2.5 flex-1">
-                          <span className="font-mono text-neutral-500 text-[11px] pt-0.5 whitespace-nowrap">
-                            {formatTimestamp(cue.start)}
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="font-semibold text-[11px] text-neutral-400">
+                            {lang.name}:
                           </span>
-                          <div className="flex-1">
-                            <p className="font-medium text-neutral-200">{cue.text}</p>
-                            {/* Translations preview */}
-                            <div className="flex flex-wrap gap-2 mt-1">
-                              {targetLanguages.filter((l) => l.enabled).map((lang) => {
-                                const trans = translations[cue.id]?.[lang.code];
-                                if (!trans) return null;
-                                return (
-                                  <span
-                                    key={lang.id}
-                                    className="text-[10px] text-neutral-400 bg-neutral-900 px-1.5 py-0.5 rounded border border-neutral-800"
-                                  >
-                                    <strong className="text-neutral-300">{lang.code}:</strong> {trans}
-                                  </span>
-                                );
-                              })}
-                            </div>
-                          </div>
+                          {isCurrentLangSpeaking && (
+                            <span
+                              data-testid={`speaking-indicator-${lang.code}`}
+                              className="flex items-center gap-1 text-[10px] text-indigo-300 font-medium"
+                            >
+                              <Volume2 className="w-3 h-3 animate-pulse" />
+                              Speaking
+                            </span>
+                          )}
                         </div>
-
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            jumpToCue(idx);
-                          }}
-                          className="px-2 py-1 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-[11px] font-medium transition"
-                        >
-                          Jump
-                        </button>
+                        <p data-testid={`translation-text-${lang.code}`} className="text-neutral-200">
+                          {translated || 'Translating...'}
+                        </p>
                       </div>
                     );
-                  })
-              )}
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Step 5: Multi-Column Subtitles View (Original Subtitle + Translation Columns) */}
+            <div className="flex flex-col gap-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-neutral-300">
+                  Subtitles &amp; Translations Matrix ({filteredCues.length} segments)
+                </span>
+                <span className="text-[11px] text-neutral-500">
+                  Click any row or play button to start learning from that timeframe
+                </span>
+              </div>
+
+              <div className="overflow-x-auto rounded-xl border border-neutral-800 bg-neutral-950/80 max-h-72 overflow-y-auto">
+                <table className="w-full text-left border-collapse" id="subtitles-columns-table">
+                  <thead className="sticky top-0 z-10 bg-neutral-900/95 backdrop-blur-sm border-b border-neutral-800 text-[11px] font-semibold text-neutral-400 uppercase tracking-wider">
+                    <tr>
+                      <th className="py-2.5 px-3 w-32 whitespace-nowrap">Timeframe</th>
+                      <th className="py-2.5 px-4 min-w-[220px]">Original Subtitle</th>
+                      {enabledTargetLangs.map((lang) => (
+                        <th key={lang.id} className="py-2.5 px-4 min-w-[220px]">
+                          <div className="flex items-center gap-1.5">
+                            <span
+                              className="w-2 h-2 rounded-full"
+                              style={{ backgroundColor: lang.color || '#6366f1' }}
+                            />
+                            <span>{lang.name}</span>
+                          </div>
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-neutral-900 text-xs">
+                    {filteredCues.map((cue, idx) => {
+                      const isSelected = activeCueIndex === idx;
+
+                      return (
+                        <tr
+                          key={cue.id}
+                          id={`subtitle-cue-row-${idx}`}
+                          data-testid={`subtitle-cue-row-${idx}`}
+                          data-cue-id={cue.id}
+                          onClick={() => {
+                            jumpToCue(idx);
+                            startSync(idx);
+                          }}
+                          className={`cursor-pointer transition group ${
+                            isSelected
+                              ? 'bg-indigo-950/40 text-neutral-100 border-l-4 border-indigo-500'
+                              : 'hover:bg-neutral-900/60 text-neutral-300'
+                          }`}
+                        >
+                          {/* Column 1: Timeframe & Play button */}
+                          <td className="py-2.5 px-3 whitespace-nowrap">
+                            <div className="flex items-center gap-2">
+                              <button
+                                type="button"
+                                title="Play from this timeframe"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  jumpToCue(idx);
+                                  startSync(idx);
+                                }}
+                                className={`w-7 h-7 rounded-lg flex items-center justify-center transition ${
+                                  isSelected && isSyncActive
+                                    ? 'bg-indigo-600 text-white shadow'
+                                    : 'bg-neutral-800 text-neutral-300 group-hover:bg-indigo-600 group-hover:text-white'
+                                }`}
+                              >
+                                <Play className="w-3.5 h-3.5 fill-current" />
+                              </button>
+                              <div className="flex flex-col font-mono text-[11px] text-neutral-400">
+                                <span>{formatTimestamp(cue.start)}</span>
+                                <span className="text-[10px] text-neutral-600">
+                                  {formatTimestamp(cue.start + (cue.duration || 2.5))}
+                                </span>
+                              </div>
+                            </div>
+                          </td>
+
+                          {/* Column 2: Original Subtitle text */}
+                          <td className="py-2.5 px-4 font-medium text-neutral-200">
+                            {cue.text}
+                          </td>
+
+                          {/* Columns 3+: Target Translation columns */}
+                          {enabledTargetLangs.map((lang) => {
+                            const trans = getCueTranslation(cue, lang.code);
+                            const isRtl = lang.code === 'ar' || lang.code === 'he' || lang.code === 'fa';
+
+                            return (
+                              <td
+                                key={lang.id}
+                                dir={isRtl ? 'rtl' : 'ltr'}
+                                className={`py-2.5 px-4 text-neutral-300 ${
+                                  isRtl ? 'text-right font-arabic' : ''
+                                }`}
+                              >
+                                {trans ? (
+                                  <span>{trans}</span>
+                                ) : (
+                                  <span className="text-neutral-600 italic">Translating...</span>
+                                )}
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
             </div>
           </div>
-        </div>
+        )}
       </div>
+
+      {/* Target Languages & Speech Settings Modal */}
+      <LanguageSettingsModal
+        isOpen={isLangSettingsOpen}
+        onClose={() => setIsLangSettingsOpen(false)}
+        targetLanguages={targetLanguages}
+        onToggleLanguage={toggleLanguage}
+        onUpdateRate={updateLanguageRate}
+        onUpdateVoice={updateLanguageVoice}
+        onMoveUp={moveLanguageUp}
+        onMoveDown={moveLanguageDown}
+        onAddLanguage={(lang) => {
+          if (targetLanguages.some((l) => l.code === lang.code)) {
+            setTargetLanguages((prev) =>
+              prev.map((l) => (l.code === lang.code ? { ...l, enabled: true } : l))
+            );
+          } else {
+            const newLang: TargetLanguage = {
+              id: `lang-${lang.code}-${Date.now()}`,
+              code: lang.code,
+              name: lang.name,
+              ttsRate: 1.0,
+              enabled: true,
+              color: '#6366f1',
+            };
+            setTargetLanguages((prev) => [...prev, newLang]);
+          }
+        }}
+        onRemoveLanguage={removeLanguage}
+        onTestSpeak={(lang) => {
+          const testCue = currentCue || effectiveCues[0] || {
+            id: 'test',
+            start: 0,
+            duration: 2,
+            text: 'Hello, testing speech translation.',
+          };
+          testSpeakLang(testCue, lang);
+        }}
+        getVoicesForLang={getVoicesForLang}
+      />
     </div>
   );
 };

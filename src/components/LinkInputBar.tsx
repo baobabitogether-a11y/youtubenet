@@ -11,6 +11,7 @@ import {
   Sparkles,
   ChevronDown,
   ChevronUp,
+  FolderHeart,
 } from 'lucide-react';
 import {
   parseYouTubeUrl,
@@ -24,11 +25,15 @@ import { formatTimestamp } from '../utils/captionParser';
 interface LinkInputBarProps {
   currentUrl: string;
   onSelectVideo: (videoId: string, rawUrl: string, parsedInfo?: ParsedYouTubeResult) => void;
+  onOpenLibrary?: () => void;
+  libraryCount?: number;
 }
 
 export const LinkInputBar: React.FC<LinkInputBarProps> = ({
   currentUrl,
   onSelectVideo,
+  onOpenLibrary,
+  libraryCount,
 }) => {
   const [inputValue, setInputValue] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -196,74 +201,26 @@ export const LinkInputBar: React.FC<LinkInputBarProps> = ({
         {/* Quick controls row */}
         <div className="flex flex-wrap items-center justify-between gap-2 px-1 text-xs text-neutral-400">
           <div className="flex items-center gap-2">
-            <button
-              type="button"
-              id="load-default-video-button"
-              onClick={handleLoadDefault}
-              className="inline-flex items-center gap-1 text-neutral-300 hover:text-white bg-neutral-800/80 hover:bg-neutral-800 px-2.5 py-1 rounded-md border border-neutral-700/60 transition"
-              title="Reset to default video"
-            >
-              <RotateCcw className="w-3 h-3 text-red-400" />
-              <span>Default Video</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setShowFormatsTray(!showFormatsTray)}
-              className="inline-flex items-center gap-1 text-neutral-400 hover:text-neutral-200 transition text-xs"
-            >
-              <Sparkles className="w-3 h-3 text-amber-400" />
-              <span>Supported Formats ({SAMPLE_YOUTUBE_URL_FORMATS.length})</span>
-              {showFormatsTray ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
-            </button>
+            {onOpenLibrary && (
+              <button
+                type="button"
+                id="open-library-button"
+                data-testid="open-library-button"
+                onClick={onOpenLibrary}
+                className="inline-flex items-center gap-1.5 text-indigo-200 hover:text-white bg-indigo-950/70 hover:bg-indigo-900 px-3 py-1.5 rounded-lg border border-indigo-800/60 transition text-xs font-medium shadow-sm"
+                title="Open cached video and subtitles library"
+              >
+                <FolderHeart className="w-3.5 h-3.5 text-indigo-400" />
+                <span>My Library {libraryCount !== undefined ? `(${libraryCount})` : ''}</span>
+              </button>
+            )}
           </div>
 
           <span className="text-[11px] text-neutral-500 hidden sm:inline">
-            Handles watch, youtu.be, shorts, live, embed, iframes &amp; timestamps
+            Paste any YouTube URL or video ID (standard, shorts, embed, timestamped)
           </span>
         </div>
       </form>
-
-      {/* Expandable test tray for any YouTube URL format */}
-      {showFormatsTray && (
-        <div className="p-3 rounded-2xl bg-neutral-900 border border-neutral-800 flex flex-col gap-2.5 text-xs animate-fade-in shadow-lg">
-          <div className="flex items-center justify-between">
-            <span className="font-semibold text-neutral-200 flex items-center gap-1.5">
-              <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-              Universal YouTube URL Support — Click to test any format:
-            </span>
-            <button
-              onClick={() => setShowFormatsTray(false)}
-              className="text-neutral-500 hover:text-neutral-300 text-[11px]"
-            >
-              Close
-            </button>
-          </div>
-
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-1.5">
-            {SAMPLE_YOUTUBE_URL_FORMATS.map((fmt) => (
-              <button
-                key={fmt.label}
-                type="button"
-                onClick={() => handleSelectSampleFormat(fmt.url)}
-                className="flex flex-col items-start p-2 rounded-xl bg-neutral-950/80 hover:bg-neutral-800 border border-neutral-800 hover:border-neutral-700 transition text-left group"
-              >
-                <div className="flex items-center justify-between w-full">
-                  <span className="font-medium text-neutral-200 group-hover:text-red-400 transition text-[11px]">
-                    {fmt.label}
-                  </span>
-                  <span className="font-mono text-[9px] px-1 py-0.2 rounded bg-neutral-800 text-neutral-400">
-                    {fmt.tag}
-                  </span>
-                </div>
-                <p className="text-[10px] text-neutral-500 mt-1 line-clamp-1">
-                  {fmt.description}
-                </p>
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
     </div>
   );
 };

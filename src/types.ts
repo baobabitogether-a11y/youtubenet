@@ -5,6 +5,14 @@ export interface VideoItem {
   timestamp: number;
 }
 
+export interface LibraryVideoItem {
+  id: string;
+  originalUrl: string;
+  title: string;
+  cues: CaptionCue[];
+  timestamp: number;
+}
+
 export interface PlayerOptions {
   autoplay: boolean;
   theaterMode: boolean;

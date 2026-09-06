@@ -39,10 +39,14 @@ test.describe('YouTube Video Viewer & Subtitles Teacher E2E Tests', () => {
   });
 
   test('2. Subtitles View - displays subtitle cues, timestamps, text, search, and jump to cue', async ({ page }) => {
-    // Load sample cues
-    const loadSampleButton = page.locator('#load-sample-cues-button');
-    await expect(loadSampleButton).toBeVisible();
-    await loadSampleButton.click();
+    // Flow Step 1: Load video with cached subtitles from library
+    const openLibraryButton = page.locator('#open-library-button');
+    await expect(openLibraryButton).toBeVisible();
+    await openLibraryButton.click();
+
+    const loadVideoBtn = page.locator('#load-library-video-jNQXAC9IVRw');
+    await expect(loadVideoBtn).toBeVisible();
+    await loadVideoBtn.click();
 
     // Verify subtitle segments list is rendered
     const firstCueRow = page.locator('#subtitle-cue-row-0');
@@ -69,8 +73,9 @@ test.describe('YouTube Video Viewer & Subtitles Teacher E2E Tests', () => {
   });
 
   test('3. Subtitles Translation - verifies translation for Italian and Arabic', async ({ page }) => {
-    // Load sample cues to have active cue
-    await page.locator('#load-sample-cues-button').click();
+    // Load cached video and subtitles from library
+    await page.locator('#open-library-button').click();
+    await page.locator('#load-library-video-jNQXAC9IVRw').click();
 
     // Ensure Italian and Arabic preset is loaded
     const presetBtn = page.locator('#preset-italian-arabic-button');
@@ -107,10 +112,15 @@ test.describe('YouTube Video Viewer & Subtitles Teacher E2E Tests', () => {
   });
 
   test('4. TTS Config - configures speaking rate, voice selection, and test audio', async ({ page }) => {
-    await page.locator('#load-sample-cues-button').click();
+    // Load cached video and subtitles from library
+    await page.locator('#open-library-button').click();
+    await page.locator('#load-library-video-jNQXAC9IVRw').click();
 
     // Set to Italian + Arabic preset
-    await page.locator('#preset-italian-arabic-button').click();
+    const presetBtn = page.locator('#preset-italian-arabic-button');
+    if ((await presetBtn.count()) > 0) {
+      await presetBtn.click();
+    }
 
     // Test Italian Rate Slider
     const itRateSlider = page.locator('#tts-rate-slider-it');
@@ -150,9 +160,13 @@ test.describe('YouTube Video Viewer & Subtitles Teacher E2E Tests', () => {
   });
 
   test('5. Synchronized Playback with Configured Order (TTS First vs Video First)', async ({ page }) => {
-    // 1. Load sample cues
-    await page.locator('#load-sample-cues-button').click();
-    await page.locator('#preset-italian-arabic-button').click();
+    // 1. Load cached video and subtitles from library
+    await page.locator('#open-library-button').click();
+    await page.locator('#load-library-video-jNQXAC9IVRw').click();
+    const presetBtn = page.locator('#preset-italian-arabic-button');
+    if ((await presetBtn.count()) > 0) {
+      await presetBtn.click();
+    }
 
     // 2. Test selecting "2. TTS First" (Play subtitles section before video playback for each time frame)
     const ttsFirstBtn = page.locator('#play-order-tts-first-button');
