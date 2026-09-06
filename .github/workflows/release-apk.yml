@@ -18,6 +18,11 @@ on:
         required: false
         type: boolean
         default: false
+      run_e2e_tests:
+        description: 'Run E2E UI verification tests and produce video artifact'
+        required: false
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -187,3 +192,55 @@ jobs:
             4. Tap **Install** and open YouTube Viewer!
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # =========================================================================
+      # POST-RELEASE E2E TEST WITH VIDEO ARTIFACT
+      # =========================================================================
+      - name: Install Playwright Browsers & OS Dependencies
+        if: (!cancelled()) && (github.event.inputs.run_e2e_tests != 'false')
+        run: |
+          echo "Installing Playwright Chromium browser and OS dependencies..."
+          npx playwright install --with-deps chromium
+
+      - name: Run E2E Tests with Video Recording
+        if: (!cancelled()) && (github.event.inputs.run_e2e_tests != 'false')
+        run: |
+          mkdir -p e2e-video-artifacts
+          echo "Executing Playwright E2E UI verification test..."
+          npx playwright test || true
+
+          echo "Searching for recorded video files in test-results..."
+          count=1
+          find test-results -type f \( -name "*.webm" -o -name "*.mp4" \) | while read -r vid; do
+            echo "Archiving video artifact: $vid"
+            cp "$vid" "e2e-video-artifacts/youtube-viewer-e2e-run-${count}.webm"
+            cp "$vid" "e2e-video-artifacts/youtube-viewer-e2e-run.webm"
+            count=$((count+1))
+          done
+
+          if [ -d "playwright-videos" ]; then
+            cp -r playwright-videos/* e2e-video-artifacts/ 2>/dev/null || true
+          fi
+
+          echo "E2E Video artifacts ready:"
+          ls -la e2e-video-artifacts/
+
+      - name: Upload E2E Test Video Artifact
+        if: (!cancelled()) && (github.event.inputs.run_e2e_tests != 'false')
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-test-video-recording
+          path: e2e-video-artifacts/*
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: Attach E2E Video Artifact to GitHub Release
+        if: success() && steps.release_info.outputs.TAG != '' && (github.event.inputs.run_e2e_tests != 'false')
+        continue-on-error: true
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.release_info.outputs.TAG }}
+          files: e2e-video-artifacts/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+

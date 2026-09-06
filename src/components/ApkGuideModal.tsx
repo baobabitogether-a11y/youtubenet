@@ -305,6 +305,11 @@ on:
         required: false
         type: boolean
         default: false
+      run_e2e_tests:
+        description: 'Run E2E UI verification tests and produce video artifact'
+        required: false
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -362,7 +367,28 @@ jobs:
           fail_on_unmatched_files: false
           token: \${{ secrets.GITHUB_TOKEN }}
         env:
-          GITHUB_TOKEN: \${{ secrets.GITHUB_TOKEN }}`;
+          GITHUB_TOKEN: \${{ secrets.GITHUB_TOKEN }}
+      - name: Install Playwright Browsers
+        if: (!cancelled()) && (github.event.inputs.run_e2e_tests != 'false')
+        run: npx playwright install --with-deps chromium
+      - name: Run E2E Test Suite & Record Video
+        if: (!cancelled()) && (github.event.inputs.run_e2e_tests != 'false')
+        run: |
+          mkdir -p e2e-video-artifacts
+          npx playwright test || true
+          count=1
+          find test-results -type f \\( -name "*.webm" -o -name "*.mp4" \\) | while read -r vid; do
+            cp "$vid" "e2e-video-artifacts/youtube-viewer-e2e-run-\${count}.webm"
+            cp "$vid" "e2e-video-artifacts/youtube-viewer-e2e-run.webm"
+            count=$((count+1))
+          done
+      - name: Upload E2E Test Video Artifact
+        if: (!cancelled()) && (github.event.inputs.run_e2e_tests != 'false')
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-test-video-recording
+          path: e2e-video-artifacts/*
+          retention-days: 14`;
 
 export const ApkGuideModal: React.FC<ApkGuideModalProps> = ({
   isOpen,
@@ -461,6 +487,7 @@ export const ApkGuideModal: React.FC<ApkGuideModalProps> = ({
       <div className="relative w-full max-w-3xl max-h-[92vh] overflow-y-auto rounded-2xl bg-neutral-900 border border-neutral-800 text-neutral-100 shadow-2xl p-4 sm:p-6">
         {/* Close Button */}
         <button
+          id="close-apk-guide-modal-button"
           onClick={onClose}
           className="absolute top-4 right-4 p-1.5 rounded-lg text-neutral-400 hover:text-white hover:bg-neutral-800 transition"
           title="Close modal"
@@ -619,7 +646,7 @@ export const ApkGuideModal: React.FC<ApkGuideModalProps> = ({
                 <span className="text-[11px] text-emerald-400 font-mono">assembleRelease & assembleDebug</span>
               </div>
               <p className="text-neutral-400 text-[11px] leading-relaxed">
-                Every push to <code className="text-neutral-200">main</code> or git tag (e.g. <code className="text-neutral-200">v1.0.0</code>) triggers GitHub Actions to bundle the web player into Android assets, compile the Kotlin interceptor, and attach signed <code className="text-emerald-400">YouTube-Viewer-release.apk</code> files directly to the GitHub Release!
+                Every push to <code className="text-neutral-200">main</code> or git tag (e.g. <code className="text-neutral-200">v1.0.0</code>) triggers GitHub Actions to bundle the web player into Android assets, compile the Kotlin interceptor, attach signed <code className="text-emerald-400">YouTube-Viewer-release.apk</code> files to the GitHub Release, and run automated E2E tests generating a downloadable <strong>video artifact</strong> (<code className="text-emerald-300">youtube-viewer-e2e-run.webm</code>)!
               </p>
               <div className="flex flex-wrap items-center gap-2 pt-1">
                 <span className="text-[10px] text-neutral-400">Quick Release:</span>
