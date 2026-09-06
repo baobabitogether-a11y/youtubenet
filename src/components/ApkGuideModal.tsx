@@ -27,18 +27,24 @@ const KOTLIN_CODE = `package com.ytviewer.app
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.graphics.Color
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.Base64
 import android.util.Log
+import android.webkit.ConsoleMessage
 import android.webkit.JavascriptInterface
+import android.webkit.WebChromeClient
+import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
+import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.webkit.WebViewAssetLoader
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
@@ -65,6 +71,9 @@ class MainActivity : AppCompatActivity() {
         webView = WebView(this)
         setContentView(webView)
 
+        webView.setBackgroundColor(Color.parseColor("#0f0f12"))
+        WebView.setWebContentsDebuggingEnabled(true)
+
         webView.settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
@@ -74,10 +83,23 @@ class MainActivity : AppCompatActivity() {
             allowContentAccess = true
             useWideViewPort = true
             loadWithOverviewMode = true
+            mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
             userAgentString = userAgentString.replace("; wv", "")
         }
 
+        val assetLoader = WebViewAssetLoader.Builder()
+            .setDomain("appassets.androidplatform.net")
+            .addPathHandler("/", WebViewAssetLoader.AssetsPathHandler(this))
+            .build()
+
         webView.addJavascriptInterface(AndroidNativeBridge(this), "AndroidNativeShell")
+
+        webView.webChromeClient = object : WebChromeClient() {
+            override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean {
+                Log.d("WebViewConsole", "\${consoleMessage?.message()} [\${consoleMessage?.sourceId()}:\${consoleMessage?.lineNumber()}]")
+                return true
+            }
+        }
 
         webView.webViewClient = object : WebViewClient() {
             override fun shouldInterceptRequest(
@@ -85,27 +107,21 @@ class MainActivity : AppCompatActivity() {
                 request: WebResourceRequest?
             ): WebResourceResponse? {
                 val url = request?.url.toString()
+                val host = request?.url?.host
+                val path = request?.url?.path ?: ""
 
-                // Intercept YouTube caption HTTP requests
                 if (url.contains("youtube.com/api/timedtext") || url.contains("/timedtext?")) {
-                    Log.i(TAG, "=== INTERCEPTED CAPTION URL: $url ===")
-
                     try {
                         val requestBuilder = Request.Builder().url(url)
                         request?.requestHeaders?.forEach { (k, v) -> requestBuilder.addHeader(k, v) }
-
                         val response = okHttpClient.newCall(requestBuilder.build()).execute()
                         val rawBytes = response.body?.bytes() ?: ByteArray(0)
                         val rawString = String(rawBytes, StandardCharsets.UTF_8)
                         val contentType = response.header("Content-Type", "text/xml; charset=utf-8") ?: "text/xml"
 
-                        // 1. Save raw caption to device storage
                         saveCaptionToFile(rawBytes)
-
-                        // 2. Dispatch raw data into the WebView JavaScript runtime
                         dispatchToJavaScript(url, rawString, contentType, response.code)
 
-                        // 3. Return stream to WebView so YouTube player continues playing
                         return WebResourceResponse(
                             contentType.split(";")[0].trim(),
                             "UTF-8",
@@ -116,11 +132,56 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
 
+                if (host == "appassets.androidplatform.net") {
+                    val cleanPath = path.removePrefix("/")
+                    val assetPath = if (cleanPath.isEmpty() || cleanPath == "/") "index.html" else cleanPath
+                    try {
+                        val inputStream = assets.open(assetPath)
+                        val mimeType = when {
+                            assetPath.endsWith(".html") -> "text/html"
+                            assetPath.endsWith(".js") || assetPath.endsWith(".mjs") -> "application/javascript"
+                            assetPath.endsWith(".css") -> "text/css"
+                            assetPath.endsWith(".json") || assetPath.endsWith(".webmanifest") -> "application/json"
+                            assetPath.endsWith(".svg") -> "image/svg+xml"
+                            assetPath.endsWith(".png") -> "image/png"
+                            assetPath.endsWith(".ico") -> "image/x-icon"
+                            assetPath.endsWith(".woff2") -> "font/woff2"
+                            else -> "application/octet-stream"
+                        }
+                        return WebResourceResponse(mimeType, "UTF-8", 200, "OK", mapOf("Access-Control-Allow-Origin" to "*"), inputStream)
+                    } catch (e: Exception) {
+                        if (!assetPath.contains(".")) {
+                            try {
+                                val indexStream = assets.open("index.html")
+                                return WebResourceResponse("text/html", "UTF-8", 200, "OK", mapOf("Access-Control-Allow-Origin" to "*"), indexStream)
+                            } catch (_: Exception) {}
+                        }
+                        val loaderResponse = assetLoader.shouldInterceptRequest(request!!.url)
+                        if (loaderResponse != null) return loaderResponse
+                    }
+                }
+
                 return super.shouldInterceptRequest(view, request)
+            }
+
+            override fun onReceivedError(view: WebView?, request: WebResourceRequest?, error: WebResourceError?) {
+                Log.e(TAG, "WebView error loading \${request?.url}: \${error?.description}")
+                super.onReceivedError(view, request, error)
             }
         }
 
-        webView.loadUrl(APP_URL)
+        val hasBundledAssets = try {
+            assets.open("index.html").close()
+            true
+        } catch (e: Exception) {
+            false
+        }
+
+        if (hasBundledAssets) {
+            webView.loadUrl("https://appassets.androidplatform.net/index.html")
+        } else {
+            webView.loadUrl(APP_URL)
+        }
     }
 
     private fun saveCaptionToFile(data: ByteArray) {
@@ -166,8 +227,7 @@ class MainActivity : AppCompatActivity() {
 }`;
 
 const MANIFEST_XML = `<?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.ytviewer.app">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
@@ -181,7 +241,7 @@ const MANIFEST_XML = `<?xml version="1.0" encoding="utf-8"?>
         android:supportsRtl="true"
         android:hardwareAccelerated="true"
         android:usesCleartextTraffic="true"
-        android:theme="@style/Theme.AppCompat.NoActionBar">
+        android:theme="@style/Theme.App">
         <activity
             android:name=".MainActivity"
             android:configChanges="orientation|screenSize|keyboardHidden"

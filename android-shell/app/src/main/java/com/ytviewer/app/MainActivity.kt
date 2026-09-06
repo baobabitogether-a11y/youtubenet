@@ -2,14 +2,19 @@ package com.ytviewer.app
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.graphics.Color
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.Base64
 import android.util.Log
+import android.webkit.ConsoleMessage
 import android.webkit.JavascriptInterface
+import android.webkit.WebChromeClient
+import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
+import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Toast
@@ -48,6 +53,12 @@ class MainActivity : AppCompatActivity() {
         webView = WebView(this)
         setContentView(webView)
 
+        // Dark background prevents white flash during page transitions
+        webView.setBackgroundColor(Color.parseColor("#0f0f12"))
+
+        // Enable remote debugging via chrome://inspect
+        WebView.setWebContentsDebuggingEnabled(true)
+
         // Configure WebView settings for YouTube video playback and JS execution
         webView.settings.apply {
             javaScriptEnabled = true
@@ -58,16 +69,25 @@ class MainActivity : AppCompatActivity() {
             allowContentAccess = true
             useWideViewPort = true
             loadWithOverviewMode = true
+            mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
             userAgentString = userAgentString.replace("; wv", "") // optimize for web video
         }
 
         // Setup AssetLoader for bundled local web assets
         val assetLoader = WebViewAssetLoader.Builder()
-            .addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(this))
+            .setDomain("appassets.androidplatform.net")
+            .addPathHandler("/", WebViewAssetLoader.AssetsPathHandler(this))
             .build()
 
         // Add JavaScript Interface for bidirectional communication
         webView.addJavascriptInterface(AndroidNativeBridge(this), "AndroidNativeShell")
+
+        webView.webChromeClient = object : WebChromeClient() {
+            override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean {
+                Log.d("WebViewConsole", "${consoleMessage?.message()} [${consoleMessage?.sourceId()}:${consoleMessage?.lineNumber()}]")
+                return true
+            }
+        }
 
         webView.webViewClient = object : WebViewClient() {
             override fun shouldInterceptRequest(
@@ -75,8 +95,10 @@ class MainActivity : AppCompatActivity() {
                 request: WebResourceRequest?
             ): WebResourceResponse? {
                 val url = request?.url.toString()
+                val host = request?.url?.host
+                val path = request?.url?.path ?: ""
 
-                // Intercept YouTube caption endpoint
+                // 1. Intercept YouTube caption endpoint
                 if (url.contains("youtube.com/api/timedtext") || url.contains("/timedtext?")) {
                     Log.i(TAG, "=== INTERCEPTED YOUTUBE CAPTION REQUEST ===")
                     Log.i(TAG, "URL: $url")
@@ -113,15 +135,57 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
 
-                // Intercept bundled web assets when hosted locally via appassets domain
-                if (request != null) {
-                    val assetResponse = assetLoader.shouldInterceptRequest(request.url)
-                    if (assetResponse != null) {
-                        return assetResponse
+                // 2. Intercept bundled web assets for offline/hybrid hosting
+                if (host == "appassets.androidplatform.net") {
+                    val cleanPath = path.removePrefix("/")
+                    val assetPath = if (cleanPath.isEmpty() || cleanPath == "/") "index.html" else cleanPath
+                    try {
+                        val inputStream = assets.open(assetPath)
+                        val mimeType = when {
+                            assetPath.endsWith(".html") -> "text/html"
+                            assetPath.endsWith(".js") || assetPath.endsWith(".mjs") -> "application/javascript"
+                            assetPath.endsWith(".css") -> "text/css"
+                            assetPath.endsWith(".json") || assetPath.endsWith(".webmanifest") -> "application/json"
+                            assetPath.endsWith(".svg") -> "image/svg+xml"
+                            assetPath.endsWith(".png") -> "image/png"
+                            assetPath.endsWith(".ico") -> "image/x-icon"
+                            assetPath.endsWith(".woff2") -> "font/woff2"
+                            else -> "application/octet-stream"
+                        }
+                        val headers = mapOf(
+                            "Access-Control-Allow-Origin" to "*",
+                            "Access-Control-Allow-Methods" to "GET, OPTIONS",
+                            "Cache-Control" to "no-cache"
+                        )
+                        return WebResourceResponse(mimeType, "UTF-8", 200, "OK", headers, inputStream)
+                    } catch (e: Exception) {
+                        // Fallback: if it's an extensionless SPA route, serve index.html
+                        if (!assetPath.contains(".")) {
+                            try {
+                                val indexStream = assets.open("index.html")
+                                return WebResourceResponse("text/html", "UTF-8", 200, "OK", mapOf("Access-Control-Allow-Origin" to "*"), indexStream)
+                            } catch (_: Exception) {}
+                        }
+                        val loaderResponse = assetLoader.shouldInterceptRequest(request!!.url)
+                        if (loaderResponse != null) return loaderResponse
                     }
                 }
 
                 return super.shouldInterceptRequest(view, request)
+            }
+
+            override fun onReceivedError(
+                view: WebView?,
+                request: WebResourceRequest?,
+                error: WebResourceError?
+            ) {
+                Log.e(TAG, "WebView error loading ${request?.url}: ${error?.description} (${error?.errorCode})")
+                super.onReceivedError(view, request, error)
+            }
+
+            override fun onPageFinished(view: WebView?, url: String?) {
+                Log.i(TAG, "Page finished loading: $url")
+                super.onPageFinished(view, url)
             }
         }
 
@@ -134,8 +198,8 @@ class MainActivity : AppCompatActivity() {
         }
 
         if (hasBundledAssets) {
-            Log.i(TAG, "Loading bundled offline web assets from appassets.androidplatform.net")
-            webView.loadUrl("https://appassets.androidplatform.net/assets/index.html")
+            Log.i(TAG, "Loading bundled offline web assets from appassets.androidplatform.net/index.html")
+            webView.loadUrl("https://appassets.androidplatform.net/index.html")
         } else {
             Log.i(TAG, "Loading remote web URL: $APP_URL")
             webView.loadUrl(APP_URL)
