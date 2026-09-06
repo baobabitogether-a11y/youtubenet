@@ -205,7 +205,7 @@ android {
 
     defaultConfig {
         applicationId = "com.ytviewer.app"
-        minSdk = 24
+        minSdk = 26
         targetSdk = 34
         versionCode = 1
         versionName = "1.0"
@@ -353,6 +353,12 @@ export const ApkGuideModal: React.FC<ApkGuideModalProps> = ({
       // GitHub Actions CI/CD Workflow
       zip.file('.github/workflows/release-apk.yml', WORKFLOW_YML);
 
+      // Gradle properties
+      zip.file(
+        'gradle.properties',
+        'org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8\nandroid.useAndroidX=true\nandroid.nonTransitiveRClass=true\norg.gradle.daemon=true\n'
+      );
+
       // App folder
       const app = zip.folder('app');
       if (app) {
@@ -364,6 +370,12 @@ export const ApkGuideModal: React.FC<ApkGuideModalProps> = ({
           const pkg = main.folder('java')?.folder('com')?.folder('ytviewer')?.folder('app');
           if (pkg) {
             pkg.file('MainActivity.kt', KOTLIN_CODE);
+          }
+          const res = main.folder('res');
+          if (res) {
+            const values = res.folder('values');
+            values?.file('themes.xml', '<resources>\n    <style name="Theme.App" parent="Theme.MaterialComponents.DayNight.NoActionBar">\n        <item name="android:statusBarColor">#0f0f0f</item>\n        <item name="android:navigationBarColor">#0f0f0f</item>\n        <item name="android:windowBackground">#0f0f0f</item>\n    </style>\n</resources>');
+            values?.file('strings.xml', '<resources>\n    <string name="app_name">YouTube Viewer</string>\n</resources>');
           }
         }
       }
