@@ -42,39 +42,68 @@ export const VideoPlayer = forwardRef<YouTubePlayerHandle, VideoPlayerProps>(
     const [isPlayerReady, setIsPlayerReady] = useState(false);
 
     const ytPlayerRef = useRef<any>(null);
-    const containerId = useRef(`yt-player-${Math.random().toString(36).substring(2, 9)}`);
+    const iframeRef = useRef<HTMLIFrameElement | null>(null);
+    const isPlayingRef = useRef<boolean>(false);
+    const playStartTimeRef = useRef<number>(Date.now());
+    const currentTimeRef = useRef<number>(startTime || 0);
+
+    const postIframeCommand = (command: string, args: any[] = []) => {
+      try {
+        const el = iframeRef.current;
+        if (el && el.contentWindow) {
+          el.contentWindow.postMessage(
+            JSON.stringify({ event: 'command', func: command, args }),
+            '*'
+          );
+        }
+      } catch {}
+    };
 
     // Imperative handle for subtitle time-sync engine
     useImperativeHandle(
       ref,
       () => ({
         play: () => {
+          isPlayingRef.current = true;
+          playStartTimeRef.current = Date.now() - currentTimeRef.current * 1000;
           try {
             ytPlayerRef.current?.playVideo?.();
           } catch {}
+          postIframeCommand('playVideo');
         },
         pause: () => {
+          isPlayingRef.current = false;
           try {
             ytPlayerRef.current?.pauseVideo?.();
           } catch {}
+          postIframeCommand('pauseVideo');
         },
         seekTo: (seconds: number) => {
+          currentTimeRef.current = seconds;
+          playStartTimeRef.current = Date.now() - seconds * 1000;
           try {
             ytPlayerRef.current?.seekTo?.(seconds, true);
           } catch {}
+          postIframeCommand('seekTo', [seconds, true]);
         },
         getCurrentTime: () => {
           try {
-            return ytPlayerRef.current?.getCurrentTime?.() || 0;
-          } catch {
-            return 0;
+            const t = ytPlayerRef.current?.getCurrentTime?.();
+            if (typeof t === 'number' && !isNaN(t) && t > 0) {
+              currentTimeRef.current = t;
+              return t;
+            }
+          } catch {}
+          if (isPlayingRef.current) {
+            return (Date.now() - playStartTimeRef.current) / 1000;
           }
+          return currentTimeRef.current;
         },
         getPlayerState: () => {
           try {
-            return ytPlayerRef.current?.getPlayerState?.() ?? -1;
+            return ytPlayerRef.current?.getPlayerState?.() ?? (isPlayingRef.current ? 1 : 2);
           } catch {
-            return -1;
+            return isPlayingRef.current ? 1 : 2;
           }
         },
         isReady: () => isPlayerReady,
@@ -82,37 +111,29 @@ export const VideoPlayer = forwardRef<YouTubePlayerHandle, VideoPlayerProps>(
       [isPlayerReady]
     );
 
-    // Initialize YouTube IFrame API Player
+    // Initialize or bind YouTube IFrame API Player without destructive element replacement
     useEffect(() => {
       let isSubscribed = true;
 
       const initPlayer = () => {
-        if (!window.YT || !window.YT.Player) return;
-        if (ytPlayerRef.current?.destroy) {
+        if (!window.YT || !window.YT.Player || !iframeRef.current) return;
+        if (ytPlayerRef.current) {
           try {
-            ytPlayerRef.current.destroy();
+            ytPlayerRef.current.cueVideoById?.({
+              videoId,
+              startSeconds: startTime || 0,
+            });
           } catch {}
+          return;
         }
 
         try {
-          ytPlayerRef.current = new window.YT.Player(containerId.current, {
-            videoId,
-            playerVars: {
-              autoplay: autoplay ? 1 : 0,
-              loop: loop ? 1 : 0,
-              start: startTime ? Math.floor(startTime) : undefined,
-              playlist: loop ? videoId : undefined,
-              rel: 0,
-              modestbranding: 1,
-              playsinline: 1,
-              enablejsapi: 1,
-            },
+          ytPlayerRef.current = new window.YT.Player(iframeRef.current, {
             events: {
               onReady: () => {
                 if (isSubscribed) setIsPlayerReady(true);
               },
               onStateChange: (event: any) => {
-                // Loop handling if player loop is on
                 if (loop && event.data === window.YT?.PlayerState?.ENDED) {
                   ytPlayerRef.current?.playVideo?.();
                 }
@@ -120,14 +141,13 @@ export const VideoPlayer = forwardRef<YouTubePlayerHandle, VideoPlayerProps>(
             },
           });
         } catch (err) {
-          console.warn('Failed to initialize YouTube IFrame Player:', err);
+          console.warn('Failed to bind YouTube IFrame Player:', err);
         }
       };
 
       if (window.YT && window.YT.Player) {
         initPlayer();
       } else {
-        // Load YouTube IFrame API script
         if (!document.getElementById('yt-iframe-api-script')) {
           const tag = document.createElement('script');
           tag.id = 'yt-iframe-api-script';
@@ -144,13 +164,8 @@ export const VideoPlayer = forwardRef<YouTubePlayerHandle, VideoPlayerProps>(
 
       return () => {
         isSubscribed = false;
-        if (ytPlayerRef.current?.destroy) {
-          try {
-            ytPlayerRef.current.destroy();
-          } catch {}
-        }
       };
-    }, [videoId, autoplay, loop, startTime]);
+    }, [videoId, loop, startTime]);
 
     const directWatchUrl =
       startTime && startTime > 0
@@ -178,14 +193,26 @@ export const VideoPlayer = forwardRef<YouTubePlayerHandle, VideoPlayerProps>(
       }
     };
 
+    const embedUrl = getYouTubeEmbedUrl(videoId, {
+      startTime,
+      autoplay,
+      loop,
+    });
+
     return (
       <div className="w-full flex flex-col gap-3">
         {/* Video Viewport Container */}
         <div className="relative w-full rounded-2xl overflow-hidden bg-black shadow-2xl border border-neutral-800 ring-1 ring-neutral-700/40">
           <div className="aspect-video w-full bg-neutral-950">
-            <div
-              id={containerId.current}
+            <iframe
+              ref={iframeRef}
+              id="youtube-player-iframe"
+              data-testid="youtube-video-player-iframe"
+              title="YouTube video player"
+              src={embedUrl}
               className="w-full h-full border-0"
+              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+              allowFullScreen
             />
           </div>
         </div>

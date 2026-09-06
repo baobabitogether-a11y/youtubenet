@@ -44,6 +44,29 @@ export function isTTSAvailable(): boolean {
 }
 
 /**
+ * Retrieves available system voices, optionally filtered by language code.
+ */
+export function getAvailableVoices(langCode?: string): SpeechSynthesisVoice[] {
+  if (typeof window === 'undefined' || !window.speechSynthesis) return [];
+  try {
+    const voices = window.speechSynthesis.getVoices() || [];
+    if (!langCode) return voices;
+
+    const clean = normalizeLanguageCode(langCode).toLowerCase();
+    const prefix = clean.split('-')[0];
+
+    // Priority: Exact match, then prefix match
+    const matching = voices.filter(
+      (v) => v.lang.toLowerCase() === clean || v.lang.toLowerCase().startsWith(prefix)
+    );
+
+    return matching.length > 0 ? matching : voices;
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Normalizes language codes (e.g. "es_auto" -> "es", "zh-CN" -> "zh-CN")
  */
 export function normalizeLanguageCode(code: string): string {
@@ -59,6 +82,7 @@ export function speakText(
   text: string,
   lang: string = 'en',
   rate: number = 1.0,
+  voiceName?: string,
   onBoundary?: (charIndex: number) => void
 ): Promise<void> {
   const cleanLang = normalizeLanguageCode(lang);
@@ -78,13 +102,13 @@ export function speakText(
           nativeTTSResolvers.delete(utteranceId);
           currentNativeUtteranceId = null;
           // Fall back to web speech if native fails
-          fallbackWebSpeech(text, cleanLang, cleanRate, onBoundary)
+          fallbackWebSpeech(text, cleanLang, cleanRate, voiceName, onBoundary)
             .then(resolve)
             .catch(reject);
         }
       } catch (err) {
         // Fallback to web speech
-        fallbackWebSpeech(text, cleanLang, cleanRate, onBoundary)
+        fallbackWebSpeech(text, cleanLang, cleanRate, voiceName, onBoundary)
           .then(resolve)
           .catch(reject);
       }
@@ -92,13 +116,14 @@ export function speakText(
   }
 
   // 2. Web Speech Synthesis API
-  return fallbackWebSpeech(text, cleanLang, cleanRate, onBoundary);
+  return fallbackWebSpeech(text, cleanLang, cleanRate, voiceName, onBoundary);
 }
 
 function fallbackWebSpeech(
   text: string,
   cleanLang: string,
   rate: number,
+  voiceName?: string,
   onBoundary?: (charIndex: number) => void
 ): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -113,9 +138,19 @@ function fallbackWebSpeech(
       utterance.lang = cleanLang;
       utterance.rate = rate;
 
-      // Select matching voice if available
-      const voices = window.speechSynthesis.getVoices();
-      if (voices && voices.length > 0) {
+      // Select voice: first check if a specific voice was requested by name or URI
+      const voices = window.speechSynthesis.getVoices() || [];
+      if (voiceName && voices.length > 0) {
+        const found = voices.find(
+          (v) => v.name === voiceName || v.voiceURI === voiceName
+        );
+        if (found) {
+          utterance.voice = found;
+        }
+      }
+
+      // If no specific voice matched, fallback to language best-match
+      if (!utterance.voice && voices.length > 0) {
         const exact = voices.find((v) => v.lang.toLowerCase() === cleanLang.toLowerCase());
         const prefix = voices.find((v) => v.lang.toLowerCase().startsWith(cleanLang.toLowerCase().split('-')[0]));
         if (exact) {
@@ -133,19 +168,28 @@ function fallbackWebSpeech(
         };
       }
 
+      // Safety timeout: estimate speaking duration so headless environments don't hang
+      const wordCount = text.split(/\s+/).filter(Boolean).length;
+      const estimatedMs = Math.min(7000, Math.max(600, (wordCount / (2.5 * Math.max(0.5, rate))) * 1000 + 500));
+      let isResolved = false;
+
+      const finish = () => {
+        if (!isResolved) {
+          isResolved = true;
+          clearTimeout(safetyTimer);
+          currentUtterance = null;
+          resolve();
+        }
+      };
+
+      const safetyTimer = setTimeout(finish, estimatedMs);
+
       utterance.onend = () => {
-        currentUtterance = null;
-        resolve();
+        finish();
       };
 
       utterance.onerror = (e) => {
-        currentUtterance = null;
-        if (e.error === 'canceled' || e.error === 'interrupted') {
-          resolve();
-        } else {
-          // Resolve rather than throw to keep video sync alive
-          resolve();
-        }
+        finish();
       };
 
       currentUtterance = utterance;

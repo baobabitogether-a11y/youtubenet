@@ -1,0 +1,53 @@
+name: End-to-End (E2E) Tests
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  e2e-tests:
+    name: Run Playwright E2E Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install Web Dependencies
+        run: npm install
+
+      - name: Install Playwright Browsers with OS Dependencies
+        run: npx playwright install --with-deps chromium
+
+      - name: Build Web Application
+        run: npm run build
+
+      - name: Execute All Playwright E2E Tests
+        run: npx playwright test
+
+      - name: Upload Playwright Test Report & Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-e2e-report
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 14

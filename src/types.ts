@@ -46,6 +46,7 @@ export interface TargetLanguage {
   code: string;
   name: string;
   ttsRate: number; // 0.5 to 2.0
+  voice?: string; // voice name or voiceURI
   enabled: boolean;
   color?: string;
 }

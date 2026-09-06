@@ -77,7 +77,7 @@ export function useSyncEngine({
         setIsSpeaking(true);
 
         try {
-          await speakText(textToSpeak, lang.code, lang.ttsRate);
+          await speakText(textToSpeak, lang.code, lang.ttsRate, lang.voice);
         } catch (err) {
           console.warn(`TTS failed for lang ${lang.code}:`, err);
         }
@@ -119,6 +119,9 @@ export function useSyncEngine({
         player.seekTo(start);
         player.play();
 
+        const startTime = Date.now();
+        const durationSec = Math.max(1.0, cue.duration || 2.5);
+
         const checkInterval = setInterval(() => {
           if (abortRef.current) {
             clearInterval(checkInterval);
@@ -127,8 +130,14 @@ export function useSyncEngine({
           }
 
           const currentTime = player.getCurrentTime();
-          // Stop slightly before cue end or when current time passes target
-          if (currentTime >= targetEnd - 0.15 || (currentTime < start - 2 && currentTime > 0)) {
+          const elapsed = (Date.now() - startTime) / 1000;
+
+          // Stop when current time passes target, or fallback timeout elapsed
+          if (
+            currentTime >= targetEnd - 0.15 ||
+            (currentTime < start - 2 && currentTime > 0) ||
+            elapsed >= durationSec + 3
+          ) {
             clearInterval(checkInterval);
             player.pause();
             resolve();
@@ -259,7 +268,7 @@ export function useSyncEngine({
       setCurrentTTSText(textToSpeak);
       setIsSpeaking(true);
       try {
-        await speakText(textToSpeak, lang.code, lang.ttsRate);
+        await speakText(textToSpeak, lang.code, lang.ttsRate, lang.voice);
       } finally {
         setIsSpeaking(false);
         setCurrentTTSLang(null);

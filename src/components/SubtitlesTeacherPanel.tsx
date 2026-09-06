@@ -35,6 +35,22 @@ interface SubtitlesTeacherPanelProps {
 
 const DEFAULT_TARGET_LANGUAGES: TargetLanguage[] = [
   {
+    id: 'lang-it',
+    code: 'it',
+    name: 'Italian (Italiano)',
+    ttsRate: 1.0,
+    enabled: true,
+    color: '#10b981',
+  },
+  {
+    id: 'lang-ar',
+    code: 'ar',
+    name: 'Arabic (العربية)',
+    ttsRate: 1.0,
+    enabled: true,
+    color: '#14b8a6',
+  },
+  {
     id: 'lang-es',
     code: 'es',
     name: 'Spanish (Español)',
@@ -68,10 +84,51 @@ export const SubtitlesTeacherPanel: React.FC<SubtitlesTeacherPanelProps> = ({
   const [targetLanguages, setTargetLanguages] = useState<TargetLanguage[]>(() => {
     try {
       const saved = localStorage.getItem('yt_teacher_languages_v1');
-      if (saved) return JSON.parse(saved);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          // Ensure it has Italian and Arabic available
+          const hasIt = parsed.some((l: any) => l.code === 'it');
+          const hasAr = parsed.some((l: any) => l.code === 'ar');
+          if (hasIt && hasAr) return parsed;
+        }
+      }
     } catch {}
     return DEFAULT_TARGET_LANGUAGES;
   });
+
+  const [availableVoices, setAvailableVoices] = useState<SpeechSynthesisVoice[]>([]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.speechSynthesis) return;
+
+    const loadVoices = () => {
+      try {
+        const v = window.speechSynthesis.getVoices() || [];
+        setAvailableVoices(v);
+      } catch {}
+    };
+
+    loadVoices();
+    window.speechSynthesis.onvoiceschanged = loadVoices;
+    return () => {
+      if (window.speechSynthesis) {
+        window.speechSynthesis.onvoiceschanged = null;
+      }
+    };
+  }, []);
+
+  const getVoicesForLang = (code: string) => {
+    const prefix = code.split('-')[0].toLowerCase();
+    const matched = availableVoices.filter((v) => v.lang.toLowerCase().startsWith(prefix));
+    return matched.length > 0 ? matched : availableVoices;
+  };
+
+  const updateLanguageVoice = (id: string, voice: string) => {
+    setTargetLanguages((prev) =>
+      prev.map((lang) => (lang.id === id ? { ...lang, voice } : lang))
+    );
+  };
 
   const [playOrder, setPlayOrder] = useState<SyncPlayOrder>(() => {
     try {
@@ -243,7 +300,12 @@ export const SubtitlesTeacherPanel: React.FC<SubtitlesTeacherPanelProps> = ({
     reader.readAsText(file);
   };
 
-  const currentCue = effectiveCues[activeCueIndex] || null;
+  const currentCue =
+    activeCueIndex >= 0 && activeCueIndex < effectiveCues.length
+      ? effectiveCues[activeCueIndex]
+      : effectiveCues.length > 0
+      ? effectiveCues[0]
+      : null;
 
   return (
     <div className="w-full rounded-2xl bg-neutral-900/90 border border-neutral-800 shadow-xl overflow-hidden flex flex-col">
@@ -382,6 +444,7 @@ export const SubtitlesTeacherPanel: React.FC<SubtitlesTeacherPanelProps> = ({
               <button
                 type="button"
                 id="play-order-video-first-button"
+                data-testid="play-order-video-first-button"
                 onClick={() => setPlayOrder('video_first')}
                 className={`px-3 py-2 rounded-lg text-xs font-medium border transition flex flex-col items-start gap-1 text-left ${
                   playOrder === 'video_first'
@@ -401,6 +464,7 @@ export const SubtitlesTeacherPanel: React.FC<SubtitlesTeacherPanelProps> = ({
               <button
                 type="button"
                 id="play-order-tts-first-button"
+                data-testid="play-order-tts-first-button"
                 onClick={() => setPlayOrder('tts_first')}
                 className={`px-3 py-2 rounded-lg text-xs font-medium border transition flex flex-col items-start gap-1 text-left ${
                   playOrder === 'tts_first'
@@ -429,8 +493,10 @@ export const SubtitlesTeacherPanel: React.FC<SubtitlesTeacherPanelProps> = ({
               <div className="flex items-center gap-2">
                 <button
                   type="button"
+                  id="load-sample-cues-button"
+                  data-testid="load-sample-cues-button"
                   onClick={handleLoadSample}
-                  className="text-[11px] px-2 py-1 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 border border-neutral-700 transition"
+                  className="text-[11px] px-2.5 py-1 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-200 border border-neutral-700 transition"
                   title="Load test practice subtitles"
                 >
                   Load Sample Cues
@@ -468,14 +534,46 @@ export const SubtitlesTeacherPanel: React.FC<SubtitlesTeacherPanelProps> = ({
                 </span>
               </h3>
               <p className="text-xs text-neutral-400 mt-0.5">
-                Configure target languages, individual speaking rates, and playback sequence.
+                Configure target languages, individual speaking rates, voice selection, and playback sequence.
               </p>
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                id="preset-italian-arabic-button"
+                data-testid="preset-italian-arabic-button"
+                onClick={() => {
+                  setTargetLanguages([
+                    {
+                      id: 'lang-it',
+                      code: 'it',
+                      name: 'Italian (Italiano)',
+                      ttsRate: 1.0,
+                      enabled: true,
+                      color: '#10b981',
+                    },
+                    {
+                      id: 'lang-ar',
+                      code: 'ar',
+                      name: 'Arabic (العربية)',
+                      ttsRate: 1.0,
+                      enabled: true,
+                      color: '#14b8a6',
+                    },
+                  ]);
+                }}
+                className="text-[11px] px-2.5 py-1.5 rounded-lg bg-indigo-950/70 hover:bg-indigo-900/90 text-indigo-300 border border-indigo-800/60 transition flex items-center gap-1 font-medium"
+                title="Quick Setup: Italian & Arabic for language practice"
+              >
+                <span>Preset: Italian + Arabic</span>
+              </button>
+
               {isAddingLang ? (
                 <div className="flex items-center gap-2">
                   <select
+                    id="add-target-language-select"
+                    data-testid="add-target-language-select"
                     value={selectedNewLang}
                     onChange={(e) => setSelectedNewLang(e.target.value)}
                     className="text-xs bg-neutral-800 text-neutral-200 border border-neutral-700 rounded-lg px-2.5 py-1.5 focus:outline-none focus:border-indigo-500"
@@ -490,6 +588,8 @@ export const SubtitlesTeacherPanel: React.FC<SubtitlesTeacherPanelProps> = ({
                   </select>
                   <button
                     type="button"
+                    id="confirm-add-target-language-button"
+                    data-testid="confirm-add-target-language-button"
                     onClick={handleAddLanguage}
                     className="px-2.5 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium transition"
                   >
@@ -507,6 +607,7 @@ export const SubtitlesTeacherPanel: React.FC<SubtitlesTeacherPanelProps> = ({
                 <button
                   type="button"
                   id="add-target-language-button"
+                  data-testid="add-target-language-button"
                   onClick={() => setIsAddingLang(true)}
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-200 text-xs font-medium border border-neutral-700 transition"
                 >
@@ -517,12 +618,14 @@ export const SubtitlesTeacherPanel: React.FC<SubtitlesTeacherPanelProps> = ({
             </div>
           </div>
 
-          {/* List of Target Languages with Reordering, Rate Sliders, and Test Voice */}
-          <div className="flex flex-col gap-2.5 mt-1">
+          {/* List of Target Languages with Reordering, Rate Sliders, and Voice Dropdown */}
+          <div className="flex flex-col gap-2.5 mt-1" id="target-languages-list" data-testid="target-languages-list">
             {targetLanguages.map((lang, index) => (
               <div
                 key={lang.id}
-                className={`p-3 rounded-xl border transition flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
+                id={`target-language-card-${lang.code}`}
+                data-testid={`target-language-card-${lang.code}`}
+                className={`p-3 rounded-xl border transition flex flex-col lg:flex-row lg:items-center justify-between gap-3 ${
                   lang.enabled
                     ? currentTTSLang === lang.code
                       ? 'bg-indigo-950/30 border-indigo-500/60 ring-1 ring-indigo-500/40'
@@ -582,12 +685,41 @@ export const SubtitlesTeacherPanel: React.FC<SubtitlesTeacherPanelProps> = ({
                   </div>
                 </div>
 
-                {/* Right: TTS Playback Rate Slider & Actions */}
-                <div className="flex flex-wrap items-center gap-4">
+                {/* Right: Voice Selection, TTS Playback Rate Slider & Actions */}
+                <div className="flex flex-wrap items-center gap-3 sm:gap-4">
+                  {/* Voice Selection Dropdown */}
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[11px] text-neutral-400 whitespace-nowrap">Voice:</span>
+                    <select
+                      id={`tts-voice-select-${lang.code}`}
+                      data-testid={`tts-voice-select-${lang.code}`}
+                      value={lang.voice || ''}
+                      disabled={!lang.enabled}
+                      onChange={(e) => updateLanguageVoice(lang.id, e.target.value)}
+                      className="text-xs bg-neutral-800 text-neutral-200 border border-neutral-700 rounded px-2 py-1 focus:outline-none focus:border-indigo-500 max-w-[135px] truncate"
+                    >
+                      <option value="">Default Voice</option>
+                      {getVoicesForLang(lang.code).length > 0 ? (
+                        getVoicesForLang(lang.code).map((v) => (
+                          <option key={v.name} value={v.name}>
+                            {v.name}
+                          </option>
+                        ))
+                      ) : (
+                        <>
+                          <option value={`System-${lang.code}-1`}>Natural {lang.code.toUpperCase()} 1</option>
+                          <option value={`System-${lang.code}-2`}>Studio {lang.code.toUpperCase()} 2</option>
+                        </>
+                      )}
+                    </select>
+                  </div>
+
                   {/* TTS Rate Controls */}
-                  <div className="flex items-center gap-2">
-                    <span className="text-[11px] text-neutral-400 whitespace-nowrap">TTS Speed:</span>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[11px] text-neutral-400 whitespace-nowrap">Rate:</span>
                     <input
+                      id={`tts-rate-slider-${lang.code}`}
+                      data-testid={`tts-rate-slider-${lang.code}`}
                       type="range"
                       min="0.5"
                       max="2.0"
@@ -595,9 +727,13 @@ export const SubtitlesTeacherPanel: React.FC<SubtitlesTeacherPanelProps> = ({
                       value={lang.ttsRate}
                       disabled={!lang.enabled}
                       onChange={(e) => updateLanguageRate(lang.id, parseFloat(e.target.value))}
-                      className="w-24 sm:w-28 accent-indigo-500 cursor-pointer"
+                      className="w-20 sm:w-24 accent-indigo-500 cursor-pointer"
                     />
-                    <span className="text-xs font-mono font-medium text-indigo-300 w-10 text-right">
+                    <span
+                      id={`tts-rate-value-${lang.code}`}
+                      data-testid={`tts-rate-value-${lang.code}`}
+                      className="text-xs font-mono font-medium text-indigo-300 w-9 text-right"
+                    >
                       {lang.ttsRate.toFixed(1)}x
                     </span>
                   </div>
@@ -605,6 +741,8 @@ export const SubtitlesTeacherPanel: React.FC<SubtitlesTeacherPanelProps> = ({
                   {/* Test Speak Button */}
                   <button
                     type="button"
+                    id={`test-speak-button-${lang.code}`}
+                    data-testid={`test-speak-button-${lang.code}`}
                     onClick={() => {
                       const testCue = currentCue || effectiveCues[0] || {
                         id: 'test',
@@ -642,7 +780,11 @@ export const SubtitlesTeacherPanel: React.FC<SubtitlesTeacherPanelProps> = ({
         <div className="flex flex-col gap-3">
           {/* Active Highlight Card */}
           {currentCue && (
-            <div className="p-4 rounded-xl bg-gradient-to-r from-neutral-900 to-indigo-950/20 border border-indigo-500/30 flex flex-col gap-2">
+            <div
+              id="active-subtitle-card"
+              data-testid="active-subtitle-card"
+              className="p-4 rounded-xl bg-gradient-to-r from-neutral-900 to-indigo-950/20 border border-indigo-500/30 flex flex-col gap-2"
+            >
               <div className="flex items-center justify-between text-xs text-neutral-400">
                 <span className="flex items-center gap-1.5 font-mono text-indigo-300">
                   <Clock className="w-3.5 h-3.5" />
@@ -656,12 +798,16 @@ export const SubtitlesTeacherPanel: React.FC<SubtitlesTeacherPanelProps> = ({
               </div>
 
               {/* Original Subtitle Text */}
-              <p className="text-sm font-medium text-neutral-100 leading-relaxed">
+              <p
+                id="active-subtitle-cue-text"
+                data-testid="active-subtitle-cue-text"
+                className="text-sm font-medium text-neutral-100 leading-relaxed"
+              >
                 "{currentCue.text}"
               </p>
 
               {/* Live Translations for Active Cue */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1" id="active-translations-grid" data-testid="active-translations-grid">
                 {targetLanguages.filter((l) => l.enabled).map((lang) => {
                   const translated = translations[currentCue.id]?.[lang.code] || 'Translating…';
                   const isCurrentLangSpeaking = isSpeaking && currentTTSLang === lang.code;
@@ -669,6 +815,8 @@ export const SubtitlesTeacherPanel: React.FC<SubtitlesTeacherPanelProps> = ({
                   return (
                     <div
                       key={lang.id}
+                      id={`active-translation-${lang.code}`}
+                      data-testid={`active-translation-${lang.code}`}
                       className={`p-2 rounded-lg text-xs border transition ${
                         isCurrentLangSpeaking
                           ? 'bg-indigo-900/40 border-indigo-400 text-indigo-200'
@@ -678,13 +826,16 @@ export const SubtitlesTeacherPanel: React.FC<SubtitlesTeacherPanelProps> = ({
                       <div className="flex items-center justify-between mb-1">
                         <span className="font-semibold text-[11px] text-neutral-400">{lang.name}:</span>
                         {isCurrentLangSpeaking && (
-                          <span className="flex items-center gap-1 text-[10px] text-indigo-300 font-medium">
+                          <span
+                            data-testid={`speaking-indicator-${lang.code}`}
+                            className="flex items-center gap-1 text-[10px] text-indigo-300 font-medium"
+                          >
                             <Volume2 className="w-3 h-3 animate-pulse" />
                             Speaking
                           </span>
                         )}
                       </div>
-                      <p className="text-neutral-200">{translated}</p>
+                      <p data-testid={`translation-text-${lang.code}`} className="text-neutral-200">{translated}</p>
                     </div>
                   );
                 })}
@@ -730,6 +881,9 @@ export const SubtitlesTeacherPanel: React.FC<SubtitlesTeacherPanelProps> = ({
                     return (
                       <div
                         key={cue.id}
+                        id={`subtitle-cue-row-${idx}`}
+                        data-testid={`subtitle-cue-row-${idx}`}
+                        data-cue-id={cue.id}
                         onClick={() => jumpToCue(idx)}
                         className={`p-2.5 flex items-start justify-between gap-3 text-xs cursor-pointer transition ${
                           isSelected
