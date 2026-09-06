@@ -12,6 +12,7 @@ import {
   Code2,
   FolderArchive,
   FileCode,
+  GitBranch,
 } from 'lucide-react';
 import JSZip from 'jszip';
 
@@ -224,7 +225,77 @@ dependencies {
     implementation("androidx.appcompat:appcompat:1.6.1")
     implementation("androidx.webkit:webkit:1.10.0")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
-}`;
+}
+`;
+
+const WORKFLOW_YML = `name: Build & Release Android APK
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Release Tag (e.g. v1.0.0)'
+        required: false
+        default: ''
+      is_prerelease:
+        description: 'Mark as pre-release'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build & Publish APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+      - run: npm ci || npm install
+      - run: npm run build
+      - name: Bundle Web Assets into Android
+        run: |
+          mkdir -p android-shell/app/src/main/assets
+          cp -r dist/* android-shell/app/src/main/assets/
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.4'
+      - name: Build APKs
+        run: |
+          cd android-shell
+          gradle wrapper --gradle-version 8.4
+          chmod +x gradlew
+          ./gradlew assembleRelease assembleDebug
+      - name: Organize Artifacts
+        run: |
+          mkdir -p release-artifacts
+          cp android-shell/app/build/outputs/apk/release/app-release.apk release-artifacts/YouTube-Viewer-release.apk
+          cp android-shell/app/build/outputs/apk/debug/app-debug.apk release-artifacts/YouTube-Viewer-debug.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: youtube-viewer-apks
+          path: release-artifacts/*
+      - uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
+        with:
+          tag_name: \${{ github.event.inputs.tag_name || github.ref_name || 'v1.0.0' }}
+          files: |
+            release-artifacts/YouTube-Viewer-release.apk
+            release-artifacts/YouTube-Viewer-debug.apk
+        env:
+          GITHUB_TOKEN: \${{ secrets.GITHUB_TOKEN }}`;
 
 export const ApkGuideModal: React.FC<ApkGuideModalProps> = ({
   isOpen,
@@ -233,7 +304,7 @@ export const ApkGuideModal: React.FC<ApkGuideModalProps> = ({
   onInstall,
 }) => {
   const [copiedCmd, setCopiedCmd] = useState<string | null>(null);
-  const [selectedCodeTab, setSelectedCodeTab] = useState<'kotlin' | 'manifest' | 'gradle'>('kotlin');
+  const [selectedCodeTab, setSelectedCodeTab] = useState<'kotlin' | 'manifest' | 'gradle' | 'workflow'>('workflow');
   const [isZipping, setIsZipping] = useState(false);
 
   if (!isOpen) return null;
@@ -272,10 +343,14 @@ export const ApkGuideModal: React.FC<ApkGuideModalProps> = ({
         `pluginManagement {\n    repositories {\n        google()\n        mavenCentral()\n        gradlePluginPortal()\n    }\n}\ndependencyResolutionManagement {\n    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)\n    repositories {\n        google()\n        mavenCentral()\n    }\n}\nrootProject.name = "YouTubeViewerShell"\ninclude(":app")`
       );
 
+      // GitHub Actions CI/CD Workflow
+      zip.file('.github/workflows/release-apk.yml', WORKFLOW_YML);
+
       // App folder
       const app = zip.folder('app');
       if (app) {
         app.file('build.gradle.kts', GRADLE_KTS);
+        app.file('proguard-rules.pro', '# ProGuard rules for YouTube Viewer Android Shell\n-keepattributes *Annotation*\n-keepattributes JavascriptInterface\n-keepclassmembers class * {\n    @android.webkit.JavascriptInterface <methods>;\n}\n-dontwarn okhttp3.**\n-dontwarn okio.**\n');
         const main = app.folder('src')?.folder('main');
         if (main) {
           main.file('AndroidManifest.xml', MANIFEST_XML);
@@ -371,6 +446,18 @@ export const ApkGuideModal: React.FC<ApkGuideModalProps> = ({
               <div className="flex items-center justify-between border-b border-neutral-750 pb-2">
                 <div className="flex items-center gap-2">
                   <button
+                    onClick={() => setSelectedCodeTab('workflow')}
+                    className={`flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-medium transition ${
+                      selectedCodeTab === 'workflow'
+                        ? 'bg-red-600/20 text-red-300 border border-red-500/40'
+                        : 'text-neutral-400 hover:text-neutral-200'
+                    }`}
+                  >
+                    <GitBranch className="w-3.5 h-3.5" />
+                    <span>release-apk.yml (CI/CD)</span>
+                  </button>
+
+                  <button
                     onClick={() => setSelectedCodeTab('kotlin')}
                     className={`flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-medium transition ${
                       selectedCodeTab === 'kotlin'
@@ -379,7 +466,7 @@ export const ApkGuideModal: React.FC<ApkGuideModalProps> = ({
                     }`}
                   >
                     <FileCode className="w-3.5 h-3.5" />
-                    <span>MainActivity.kt (Interceptor)</span>
+                    <span>MainActivity.kt</span>
                   </button>
 
                   <button
@@ -410,7 +497,9 @@ export const ApkGuideModal: React.FC<ApkGuideModalProps> = ({
                 <button
                   onClick={() => {
                     const code =
-                      selectedCodeTab === 'kotlin'
+                      selectedCodeTab === 'workflow'
+                        ? WORKFLOW_YML
+                        : selectedCodeTab === 'kotlin'
                         ? KOTLIN_CODE
                         : selectedCodeTab === 'manifest'
                         ? MANIFEST_XML
@@ -434,19 +523,40 @@ export const ApkGuideModal: React.FC<ApkGuideModalProps> = ({
               </div>
 
               <pre className="max-h-56 overflow-auto p-3 rounded-xl bg-neutral-950 border border-neutral-800 text-[11px] font-mono text-neutral-300 leading-relaxed">
+                {selectedCodeTab === 'workflow' && WORKFLOW_YML}
                 {selectedCodeTab === 'kotlin' && KOTLIN_CODE}
                 {selectedCodeTab === 'manifest' && MANIFEST_XML}
                 {selectedCodeTab === 'gradle' && GRADLE_KTS}
               </pre>
             </div>
 
+            {/* GitHub Actions CI/CD Automated Release Callout */}
+            <div className="p-3.5 rounded-xl bg-neutral-900 border border-emerald-500/30 text-xs text-neutral-300 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="font-semibold text-white flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                  GitHub Actions Automated Release (.github/workflows/release-apk.yml)
+                </span>
+                <span className="text-[11px] text-emerald-400 font-mono">assembleRelease & assembleDebug</span>
+              </div>
+              <p className="text-neutral-400 text-[11px] leading-relaxed">
+                Every push to <code className="text-neutral-200">main</code> or git tag (e.g. <code className="text-neutral-200">v1.0.0</code>) triggers GitHub Actions to bundle the web player into Android assets, compile the Kotlin interceptor, and attach signed <code className="text-emerald-400">YouTube-Viewer-release.apk</code> files directly to the GitHub Release!
+              </p>
+              <div className="flex flex-wrap items-center gap-2 pt-1">
+                <span className="text-[10px] text-neutral-400">Quick Release:</span>
+                <code className="px-2 py-0.5 rounded bg-neutral-950 border border-neutral-800 text-[11px] text-neutral-200 font-mono">
+                  git tag v1.0.0 && git push --tags
+                </code>
+              </div>
+            </div>
+
             {/* Steps to compile APK */}
             <div className="p-3 rounded-xl bg-neutral-900 border border-neutral-750 text-xs text-neutral-300 space-y-1">
-              <p className="font-semibold text-white">How to compile APK in 3 steps:</p>
+              <p className="font-semibold text-white">Alternative: Local build in Android Studio:</p>
               <ol className="list-decimal list-inside space-y-1 text-neutral-400">
                 <li>Download the ZIP or open the <code className="text-neutral-200">/android-shell</code> folder in Android Studio.</li>
                 <li>Let Gradle sync dependencies (<code className="text-neutral-200">OkHttp 4.12</code> and <code className="text-neutral-200">AndroidX WebKit</code>).</li>
-                <li>Go to <strong>Build</strong> &gt; <strong>Build Bundle(s) / APK(s)</strong> &gt; <strong>Build APK(s)</strong>. Your APK is ready in <code className="text-neutral-200">app/build/outputs/apk/debug/</code>.</li>
+                <li>Run <code className="text-neutral-200">./gradlew assembleRelease</code> or click <strong>Build</strong> &gt; <strong>Build APK(s)</strong>. Your signed APK is ready in <code className="text-neutral-200">app/build/outputs/apk/release/</code>!</li>
               </ol>
             </div>
           </div>

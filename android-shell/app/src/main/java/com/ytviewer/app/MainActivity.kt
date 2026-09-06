@@ -14,6 +14,7 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.webkit.WebViewAssetLoader
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
@@ -59,6 +60,11 @@ class MainActivity : AppCompatActivity() {
             loadWithOverviewMode = true
             userAgentString = userAgentString.replace("; wv", "") // optimize for web video
         }
+
+        // Setup AssetLoader for bundled local web assets
+        val assetLoader = WebViewAssetLoader.Builder()
+            .addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(this))
+            .build()
 
         // Add JavaScript Interface for bidirectional communication
         webView.addJavascriptInterface(AndroidNativeBridge(this), "AndroidNativeShell")
@@ -107,12 +113,33 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
 
+                // Intercept bundled web assets when hosted locally via appassets domain
+                if (request != null) {
+                    val assetResponse = assetLoader.shouldInterceptRequest(request.url)
+                    if (assetResponse != null) {
+                        return assetResponse
+                    }
+                }
+
                 return super.shouldInterceptRequest(view, request)
             }
         }
 
-        // Load the application
-        webView.loadUrl(APP_URL)
+        // Load the application: prefer local bundled web app if available, otherwise load remote APP_URL
+        val hasBundledAssets = try {
+            assets.open("index.html").close()
+            true
+        } catch (e: Exception) {
+            false
+        }
+
+        if (hasBundledAssets) {
+            Log.i(TAG, "Loading bundled offline web assets from appassets.androidplatform.net")
+            webView.loadUrl("https://appassets.androidplatform.net/assets/index.html")
+        } else {
+            Log.i(TAG, "Loading remote web URL: $APP_URL")
+            webView.loadUrl(APP_URL)
+        }
     }
 
     private fun saveCaptionToFile(url: String, data: ByteArray) {
