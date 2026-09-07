@@ -12,12 +12,14 @@ import {
   ChevronDown,
   ChevronUp,
   FolderHeart,
+  Share2,
 } from 'lucide-react';
 import {
   parseYouTubeUrl,
   formatTypeName,
   DEFAULT_VIDEO_URL,
   SAMPLE_YOUTUBE_URL_FORMATS,
+  validateYouTubeUrl,
 } from '../utils/youtube';
 import { ParsedYouTubeResult } from '../types';
 import { formatTimestamp } from '../utils/captionParser';
@@ -26,6 +28,7 @@ interface LinkInputBarProps {
   currentUrl: string;
   onSelectVideo: (videoId: string, rawUrl: string, parsedInfo?: ParsedYouTubeResult) => void;
   onOpenLibrary?: () => void;
+  onOpenShare?: () => void;
   libraryCount?: number;
 }
 
@@ -33,6 +36,7 @@ export const LinkInputBar: React.FC<LinkInputBarProps> = ({
   currentUrl,
   onSelectVideo,
   onOpenLibrary,
+  onOpenShare,
   libraryCount,
 }) => {
   const [inputValue, setInputValue] = useState('');
@@ -56,15 +60,16 @@ export const LinkInputBar: React.FC<LinkInputBarProps> = ({
       return;
     }
 
-    const parsed = parseYouTubeUrl(target);
-    if (!parsed) {
+    const validation = validateYouTubeUrl(target);
+    if (!validation.isValid || !validation.parsed) {
       setError(
-        'Could not find a valid YouTube video in the provided text. Please check the URL format and try again.'
+        validation.error ||
+          'Could not recognize a YouTube video in the provided text. The app only supports YouTube links.'
       );
       return;
     }
 
-    onSelectVideo(parsed.videoId, target, parsed);
+    onSelectVideo(validation.parsed.videoId, target, validation.parsed);
     setInputValue('');
   };
 
@@ -74,11 +79,16 @@ export const LinkInputBar: React.FC<LinkInputBarProps> = ({
       if (text) {
         setInputValue(text);
         setError(null);
-        // Auto-play if immediately recognized
-        const parsed = parseYouTubeUrl(text);
-        if (parsed) {
-          onSelectVideo(parsed.videoId, text, parsed);
+        // Auto-play if immediately recognized as YouTube
+        const validation = validateYouTubeUrl(text);
+        if (validation.isValid && validation.parsed) {
+          onSelectVideo(validation.parsed.videoId, text, validation.parsed);
           setInputValue('');
+        } else if (text.trim().startsWith('http')) {
+          // If pasted a non-YouTube link, complain immediately!
+          setError(
+            validation.error || 'The pasted link is not a YouTube link. Only YouTube links can be played.'
+          );
         }
       }
     } catch {
@@ -201,6 +211,20 @@ export const LinkInputBar: React.FC<LinkInputBarProps> = ({
         {/* Quick controls row */}
         <div className="flex flex-wrap items-center justify-between gap-2 px-1 text-xs text-neutral-400">
           <div className="flex items-center gap-2">
+            {onOpenShare && (
+              <button
+                type="button"
+                id="linkbar-share-link-button"
+                data-testid="linkbar-share-link-button"
+                onClick={onOpenShare}
+                className="inline-flex items-center gap-1.5 text-red-200 hover:text-white bg-red-950/70 hover:bg-red-900 px-3 py-1.5 rounded-lg border border-red-800/60 transition text-xs font-semibold shadow-sm active:scale-95"
+                title="Share link with the app"
+              >
+                <Share2 className="w-3.5 h-3.5 text-red-400" />
+                <span>Share Link with App</span>
+              </button>
+            )}
+
             {onOpenLibrary && (
               <button
                 type="button"

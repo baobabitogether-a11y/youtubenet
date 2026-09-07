@@ -104,6 +104,8 @@ declare global {
     onNativeCaptionsInterceptedBase64?: (base64Json: string) => void;
     onNativeTTSDone?: (utteranceId: string) => void;
     onNativeTTSError?: (utteranceId: string, errorMsg?: string) => void;
+    onNativeSharedLinkReceived?: (sharedLink: string) => void;
+    __pendingSharedLink?: string;
     YT?: any;
     onYouTubeIframeAPIReady?: () => void;
   }

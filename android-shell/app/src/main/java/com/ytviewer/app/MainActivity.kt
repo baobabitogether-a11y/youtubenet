@@ -2,6 +2,7 @@ package com.ytviewer.app
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.Intent
 import android.graphics.Color
 import android.os.Bundle
 import android.os.Handler
@@ -216,6 +217,43 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         } else {
             Log.i(TAG, "Loading remote web URL: $APP_URL")
             webView.loadUrl(APP_URL)
+        }
+
+        // Handle any shared intent that opened the app
+        handleSharedIntent(intent)
+    }
+
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleSharedIntent(intent)
+    }
+
+    private fun handleSharedIntent(intent: Intent?) {
+        if (intent == null) return
+        val action = intent.action
+        val type = intent.type
+
+        if (Intent.ACTION_SEND == action && type != null) {
+            if ("text/plain" == type || type.startsWith("text/")) {
+                val sharedText = intent.getStringExtra(Intent.EXTRA_TEXT)
+                    ?: intent.getStringExtra(Intent.EXTRA_SUBJECT)
+                if (!sharedText.isNullOrBlank()) {
+                    Log.i(TAG, "Received shared link from Android intent: $sharedText")
+                    mainHandler.postDelayed({
+                        val jsCode = """
+                            (function() {
+                                if (window.onNativeSharedLinkReceived) {
+                                    window.onNativeSharedLinkReceived(${JSONObject.quote(sharedText)});
+                                } else {
+                                    window.__pendingSharedLink = ${JSONObject.quote(sharedText)};
+                                }
+                            })();
+                        """.trimIndent()
+                        webView.evaluateJavascript(jsCode, null)
+                    }, 500)
+                }
+            }
         }
     }
 

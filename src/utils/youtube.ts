@@ -486,3 +486,59 @@ export const SAMPLE_YOUTUBE_URL_FORMATS: Array<{
     description: 'Direct video ID without any domain',
   },
 ];
+
+export interface YouTubeValidationResult {
+  isValid: boolean;
+  error?: string;
+  parsed?: ParsedYouTubeResult;
+}
+
+/**
+ * Validates any shared link or input text.
+ * Returns clear, helpful complaints if the link is not a recognized YouTube URL.
+ */
+export function validateYouTubeUrl(input: string): YouTubeValidationResult {
+  const trimmed = input?.trim();
+  if (!trimmed) {
+    return {
+      isValid: false,
+      error: 'Please enter or share a link with the app.',
+    };
+  }
+
+  const parsed = parseYouTubeUrl(trimmed);
+  if (!parsed) {
+    // Determine the nature of the link to provide a precise complaint
+    let domainHint = '';
+    try {
+      const urlObj = new URL(trimmed.startsWith('http') ? trimmed : `https://${trimmed}`);
+      domainHint = urlObj.hostname;
+    } catch {
+      // not a standard url
+    }
+
+    if (domainHint) {
+      return {
+        isValid: false,
+        error: `"${domainHint}" is not a YouTube link. The app only supports YouTube videos (youtube.com, youtu.be, shorts, live, embed).`,
+      };
+    }
+
+    return {
+      isValid: false,
+      error: `The shared link or text "${trimmed.slice(0, 45)}${trimmed.length > 45 ? '...' : ''}" is not a valid YouTube link. Please provide a YouTube video URL or 11-character video ID.`,
+    };
+  }
+
+  return {
+    isValid: true,
+    parsed,
+  };
+}
+
+export const SAMPLE_INVALID_LINKS = [
+  { label: 'Vimeo Link', url: 'https://vimeo.com/76979871', reason: 'Vimeo video platform' },
+  { label: 'Dailymotion Link', url: 'https://www.dailymotion.com/video/x7tgad0', reason: 'Dailymotion video platform' },
+  { label: 'General Website', url: 'https://www.wikipedia.org', reason: 'Non-video website' },
+  { label: 'Arbitrary Text', url: 'hello world non-video text', reason: 'Plain text without YouTube ID' },
+];

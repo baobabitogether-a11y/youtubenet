@@ -1,9 +1,10 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Navbar } from './components/Navbar';
 import { LinkInputBar } from './components/LinkInputBar';
 import { VideoPlayer } from './components/VideoPlayer';
 import { SubtitlesTeacherPanel } from './components/SubtitlesTeacherPanel';
 import { VideoLibraryModal } from './components/VideoLibraryModal';
+import { ShareLinkModal } from './components/ShareLinkModal';
 import { OfflineIndicator } from './components/OfflineIndicator';
 import {
   VideoItem,
@@ -14,8 +15,26 @@ import {
   YouTubePlayerHandle,
   CaptionCue,
 } from './types';
-import { DEFAULT_VIDEO_ID, DEFAULT_VIDEO_URL, parseYouTubeUrl } from './utils/youtube';
-import { parseRawCaptionData, decodeBase64ToUtf8, cleanAndFixEncoding, fixMojibake } from './utils/captionParser';
+import {
+  DEFAULT_VIDEO_ID,
+  DEFAULT_VIDEO_URL,
+  parseYouTubeUrl,
+  validateYouTubeUrl,
+} from './utils/youtube';
+import {
+  parseRawCaptionData,
+  decodeBase64ToUtf8,
+  cleanAndFixEncoding,
+  fixMojibake,
+} from './utils/captionParser';
+import {
+  getCachedSubtitles,
+  saveCachedSubtitles,
+  hasCachedSubtitles,
+  getLastActiveVideo,
+  saveLastActiveVideo,
+} from './utils/subtitleCache';
+import { ShieldAlert, CheckCircle2, Subtitles, X, RefreshCw } from 'lucide-react';
 
 const LIBRARY_STORAGE_KEY = 'yt_video_library_v2';
 
@@ -36,18 +55,72 @@ const DEFAULT_LIBRARY_ITEMS: LibraryVideoItem[] = [
 ];
 
 export default function App() {
-  const [videoId, setVideoId] = useState<string>(DEFAULT_VIDEO_ID);
-  const [currentUrl, setCurrentUrl] = useState<string>(DEFAULT_VIDEO_URL);
+  // Determine initial video ID and URL
+  const [videoId, setVideoId] = useState<string>(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      const sharedUrl = params.get('url') || params.get('text') || params.get('link') || params.get('share') || params.get('v');
+      if (sharedUrl) {
+        const validation = validateYouTubeUrl(sharedUrl);
+        if (validation.isValid && validation.parsed) {
+          return validation.parsed.videoId;
+        }
+      }
+      const lastActive = getLastActiveVideo();
+      if (lastActive && lastActive.videoId) {
+        return lastActive.videoId;
+      }
+    }
+    return DEFAULT_VIDEO_ID;
+  });
+
+  const [currentUrl, setCurrentUrl] = useState<string>(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      const sharedUrl = params.get('url') || params.get('text') || params.get('link') || params.get('share') || params.get('v');
+      if (sharedUrl) {
+        const validation = validateYouTubeUrl(sharedUrl);
+        if (validation.isValid && validation.parsed) {
+          return sharedUrl;
+        }
+      }
+      const lastActive = getLastActiveVideo();
+      if (lastActive && lastActive.url) {
+        return lastActive.url;
+      }
+    }
+    return DEFAULT_VIDEO_URL;
+  });
+
   const [startTime, setStartTime] = useState<number | undefined>(undefined);
   const [detectedFormat, setDetectedFormat] = useState<YouTubeFormatType | undefined>('standard_watch');
   const [theaterMode, setTheaterMode] = useState<boolean>(false);
   const [isLibraryOpen, setIsLibraryOpen] = useState<boolean>(false);
+  const [isShareModalOpen, setIsShareModalOpen] = useState<boolean>(false);
   const [interceptedData, setInterceptedData] = useState<InterceptedCaptionData | null>(null);
+
+  // Restore cached subtitles for active video on initialization
   const [customCues, setCustomCues] = useState<CaptionCue[] | null>(() => {
-    return DEFAULT_LIBRARY_ITEMS[0].cues || null;
+    if (typeof window !== 'undefined') {
+      // 1. Try dedicated persistent subtitle cache
+      const cached = getCachedSubtitles(videoId);
+      if (cached && cached.length > 0) {
+        return cached;
+      }
+    }
+    if (videoId === 'jNQXAC9IVRw') {
+      return DEFAULT_LIBRARY_ITEMS[0].cues || null;
+    }
+    return null;
   });
+
   const [isFetchingSubtitles, setIsFetchingSubtitles] = useState<boolean>(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
+  const [restoredToast, setRestoredToast] = useState<string | null>(null);
+
+  // Shared Link feedback state (complaint if not youtube link, or success)
+  const [sharedLinkComplaint, setSharedLinkComplaint] = useState<string | null>(null);
+  const [sharedLinkSuccess, setSharedLinkSuccess] = useState<string | null>(null);
 
   const playerRef = useRef<YouTubePlayerHandle | null>(null);
 
@@ -67,16 +140,145 @@ export default function App() {
     return DEFAULT_LIBRARY_ITEMS;
   });
 
-  // Fetch Subtitles from backend
-  const handleFetchSubtitles = async (targetId?: string) => {
+  // Persist library
+  useEffect(() => {
+    try {
+      localStorage.setItem(LIBRARY_STORAGE_KEY, JSON.stringify(library));
+    } catch (err) {
+      console.warn('Library localStorage write failed:', err);
+    }
+  }, [library]);
+
+  // Save active video session
+  useEffect(() => {
+    if (videoId && currentUrl) {
+      saveLastActiveVideo(videoId, currentUrl);
+    }
+  }, [videoId, currentUrl]);
+
+  // Automatically restore cached subtitles whenever videoId changes
+  useEffect(() => {
+    if (!videoId) return;
+
+    // Check dedicated subtitle cache
+    const cached = getCachedSubtitles(videoId);
+    if (cached && cached.length > 0) {
+      setCustomCues(cached);
+      setFetchError(null);
+      setRestoredToast(`Restored ${cached.length} cached subtitles`);
+      const timer = setTimeout(() => setRestoredToast(null), 3000);
+      return () => clearTimeout(timer);
+    } else {
+      // Check library state
+      const libItem = library.find((item) => item.id === videoId);
+      if (libItem && libItem.cues && libItem.cues.length > 0) {
+        setCustomCues(libItem.cues);
+        saveCachedSubtitles(videoId, libItem.cues, {
+          title: libItem.title,
+          originalUrl: libItem.originalUrl,
+        });
+        setFetchError(null);
+        setRestoredToast(`Restored ${libItem.cues.length} cached subtitles from library`);
+        const timer = setTimeout(() => setRestoredToast(null), 3000);
+        return () => clearTimeout(timer);
+      } else {
+        setCustomCues(null);
+        setInterceptedData(null);
+      }
+    }
+  }, [videoId]);
+
+  // Handler to process any shared link (via URL param, native Android intent, or Share dialog)
+  const handleProcessSharedLink = useCallback((rawLink: string) => {
+    setSharedLinkComplaint(null);
+    setSharedLinkSuccess(null);
+
+    const validation = validateYouTubeUrl(rawLink);
+    if (!validation.isValid || !validation.parsed) {
+      // COMPLAIN if it is not a YouTube link!
+      const complaintText =
+        validation.error ||
+        `The shared link is not a YouTube URL. The app only accepts YouTube links (youtube.com, youtu.be, shorts, live, embed).`;
+      setSharedLinkComplaint(complaintText);
+      return false;
+    }
+
+    // Valid YouTube link: load video based on that link
+    const { videoId: newId, startTime: newStart, formatType } = validation.parsed;
+    setVideoId(newId);
+    setCurrentUrl(rawLink);
+    setStartTime(newStart);
+    setDetectedFormat(formatType || 'standard_watch');
+    setFetchError(null);
+    setSharedLinkSuccess(`Successfully loaded YouTube video (${newId})`);
+
+    // Check and restore cached subtitles immediately
+    const cached = getCachedSubtitles(newId);
+    if (cached && cached.length > 0) {
+      setCustomCues(cached);
+      setRestoredToast(`Restored ${cached.length} cached subtitles for shared video`);
+    } else {
+      setCustomCues(null);
+    }
+
+    // Clean up query param in address bar without reload
+    try {
+      const cleanUrl = window.location.pathname;
+      window.history.replaceState({}, '', cleanUrl);
+    } catch {}
+
+    const timer = setTimeout(() => setSharedLinkSuccess(null), 4000);
+    return true;
+  }, []);
+
+  // Listen for initial URL share parameter on mount
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const params = new URLSearchParams(window.location.search);
+    const sharedParam =
+      params.get('url') ||
+      params.get('text') ||
+      params.get('link') ||
+      params.get('share') ||
+      params.get('v');
+
+    if (sharedParam) {
+      handleProcessSharedLink(sharedParam);
+    }
+
+    // Register Android Native Shell bridge handler for shared intents
+    window.onNativeSharedLinkReceived = (sharedLink: string) => {
+      if (sharedLink) {
+        handleProcessSharedLink(sharedLink);
+      }
+    };
+
+    if (window.__pendingSharedLink) {
+      handleProcessSharedLink(window.__pendingSharedLink);
+      window.__pendingSharedLink = undefined;
+    }
+
+    return () => {
+      delete window.onNativeSharedLinkReceived;
+    };
+  }, [handleProcessSharedLink]);
+
+  // Fetch Subtitles from backend or restore from cache
+  const handleFetchSubtitles = async (targetId?: string, forceRefresh = false) => {
     const idToFetch = targetId || videoId;
     if (!idToFetch) return;
 
-    // Check if already in library with non-empty cues
-    const cachedItem = library.find((item) => item.id === idToFetch);
-    if (cachedItem && cachedItem.cues && cachedItem.cues.length > 0) {
-      setCustomCues(cachedItem.cues);
-      return;
+    // Check if already in cache with non-empty cues (unless user specifically forces refresh)
+    if (!forceRefresh) {
+      const cached = getCachedSubtitles(idToFetch);
+      if (cached && cached.length > 0) {
+        setCustomCues(cached);
+        setFetchError(null);
+        setRestoredToast(`Restored ${cached.length} cached subtitles`);
+        setTimeout(() => setRestoredToast(null), 3000);
+        return;
+      }
     }
 
     setIsFetchingSubtitles(true);
@@ -100,9 +302,16 @@ export default function App() {
         text: cleanAndFixEncoding(c.text),
       }));
 
+      // 1. Set active state
       setCustomCues(sanitizedCues);
 
-      // Auto-cache into library
+      // 2. Persist in dedicated subtitle cache (independent and fast)
+      saveCachedSubtitles(idToFetch, sanitizedCues, {
+        title: `Video ${idToFetch}`,
+        originalUrl: currentUrl,
+      });
+
+      // 3. Auto-cache into library state
       setLibrary((prev) => {
         const existing = prev.find((item) => item.id === idToFetch);
         if (existing) {
@@ -119,6 +328,9 @@ export default function App() {
         };
         return [newItem, ...prev];
       });
+
+      setRestoredToast(`Saved ${sanitizedCues.length} subtitles to cache`);
+      setTimeout(() => setRestoredToast(null), 3000);
     } catch (err: any) {
       console.warn('Subtitles fetch error:', err);
       setFetchError(err.message || 'Failed to fetch subtitles.');
@@ -135,7 +347,7 @@ export default function App() {
           // Robust UTF-8 Base64 decoding (prevents ASCII/Latin-1 character corruption)
           const decodedString = decodeBase64ToUtf8(base64Payload);
           const payload = JSON.parse(decodedString);
-          
+
           // Ensure rawData is properly decoded and parsed
           const cleanRawData = fixMojibake(payload.rawData || '');
           const { format, cues } = parseRawCaptionData(cleanRawData);
@@ -158,6 +370,30 @@ export default function App() {
           setInterceptedData(data);
           if (cues.length > 0) {
             setCustomCues(cues);
+            // Save intercepted captions into persistent cache
+            saveCachedSubtitles(videoId, cues, {
+              title: `Video ${videoId}`,
+              originalUrl: currentUrl,
+            });
+            // Update library
+            setLibrary((prev) => {
+              const existing = prev.find((item) => item.id === videoId);
+              if (existing) {
+                return prev.map((item) =>
+                  item.id === videoId ? { ...item, cues } : item
+                );
+              }
+              return [
+                {
+                  id: videoId,
+                  originalUrl: currentUrl,
+                  title: `Video ${videoId}`,
+                  cues,
+                  timestamp: Date.now(),
+                },
+                ...prev,
+              ];
+            });
           }
         } catch (err) {
           console.error('Error processing native intercepted caption:', err);
@@ -168,16 +404,7 @@ export default function App() {
     return () => {
       delete window.onNativeCaptionsInterceptedBase64;
     };
-  }, [videoId]);
-
-  // Persist library
-  useEffect(() => {
-    try {
-      localStorage.setItem(LIBRARY_STORAGE_KEY, JSON.stringify(library));
-    } catch {
-      // Ignore
-    }
-  }, [library]);
+  }, [videoId, currentUrl]);
 
   // Flow Step 1: User inputs video URL
   const handleSelectVideo = (newId: string, rawUrl: string, parsedInfo?: ParsedYouTubeResult) => {
@@ -186,18 +413,27 @@ export default function App() {
     setStartTime(parsedInfo?.startTime);
     setDetectedFormat(parsedInfo?.formatType || 'standard_watch');
     setFetchError(null);
+    setSharedLinkComplaint(null);
 
-    // Check if video is already in library with cached subtitles
-    const cachedItem = library.find((item) => item.id === newId);
-    if (cachedItem && cachedItem.cues && cachedItem.cues.length > 0) {
-      setCustomCues(cachedItem.cues);
+    // Restore cached subtitles if present
+    const cached = getCachedSubtitles(newId);
+    if (cached && cached.length > 0) {
+      setCustomCues(cached);
+      setRestoredToast(`Restored ${cached.length} cached subtitles`);
+      setTimeout(() => setRestoredToast(null), 3000);
     } else {
-      setCustomCues(null);
-      setInterceptedData(null);
+      const libMatch = library.find((item) => item.id === newId);
+      if (libMatch && libMatch.cues && libMatch.cues.length > 0) {
+        setCustomCues(libMatch.cues);
+        saveCachedSubtitles(newId, libMatch.cues);
+      } else {
+        setCustomCues(null);
+        setInterceptedData(null);
+      }
     }
   };
 
-  // Flow Step 1: User loads video from library (cached videoID and subtitles)
+  // Flow Step 1: User loads video from library
   const handleSelectLibraryItem = (item: LibraryVideoItem) => {
     const parsed = parseYouTubeUrl(item.originalUrl);
     setVideoId(item.id);
@@ -205,22 +441,37 @@ export default function App() {
     setStartTime(parsed?.startTime);
     setDetectedFormat(parsed?.formatType || 'standard_watch');
     setFetchError(null);
+    setSharedLinkComplaint(null);
+
     if (item.cues && item.cues.length > 0) {
       setCustomCues(item.cues);
+      saveCachedSubtitles(item.id, item.cues, {
+        title: item.title,
+        originalUrl: item.originalUrl,
+      });
+      setRestoredToast(`Restored ${item.cues.length} cached subtitles from library`);
+      setTimeout(() => setRestoredToast(null), 3000);
     } else {
-      setCustomCues(null);
+      const cached = getCachedSubtitles(item.id);
+      if (cached && cached.length > 0) {
+        setCustomCues(cached);
+      } else {
+        setCustomCues(null);
+      }
     }
   };
 
   const handleSaveCurrentToLibrary = (title: string) => {
-    const activeCues = customCues && customCues.length > 0 ? customCues : (interceptedData?.cues || []);
+    const active = customCues && customCues.length > 0 ? customCues : (interceptedData?.cues || []);
     const newItem: LibraryVideoItem = {
       id: videoId,
       originalUrl: currentUrl,
       title: title || `Video ${videoId}`,
-      cues: activeCues,
+      cues: active,
       timestamp: Date.now(),
     };
+
+    saveCachedSubtitles(videoId, active, { title: newItem.title, originalUrl: currentUrl });
 
     setLibrary((prev) => {
       const filtered = prev.filter((i) => i.id !== videoId);
@@ -239,19 +490,99 @@ export default function App() {
       <Navbar
         onOpenLibrary={() => setIsLibraryOpen(true)}
         libraryCount={library.length}
+        onOpenShare={() => setIsShareModalOpen(true)}
       />
 
       <main className="flex-1 w-full flex flex-col items-center py-6 px-4 sm:px-6">
         <div
-          className={`w-full transition-all duration-300 ${
-            theaterMode ? 'max-w-6xl' : 'max-w-4xl'
-          } flex flex-col gap-5`}
+          className={`w-full flex flex-col gap-6 transition-all duration-300 ${
+            theaterMode ? 'max-w-7xl' : 'max-w-5xl'
+          }`}
         >
-          {/* Step 1: Link paste & Library Access */}
+          {/* Shared Link Complaint Banner: The app will complain if it's not a YouTube link */}
+          {sharedLinkComplaint && (
+            <div
+              id="shared-link-complaint-banner"
+              data-testid="shared-link-complaint-banner"
+              className="p-4 rounded-2xl bg-red-950/80 border border-red-700/80 text-red-200 shadow-xl flex items-start justify-between gap-3 animate-fadeIn"
+            >
+              <div className="flex items-start gap-3">
+                <div className="p-2 rounded-xl bg-red-900/60 text-red-400 shrink-0 mt-0.5">
+                  <ShieldAlert className="w-5 h-5" />
+                </div>
+                <div className="space-y-1">
+                  <h3 className="font-semibold text-sm text-red-300 flex items-center gap-2">
+                    <span>Invalid Video Link (Not a YouTube Link)</span>
+                  </h3>
+                  <p className="text-xs text-red-200/90 leading-relaxed">
+                    {sharedLinkComplaint}
+                  </p>
+                  <p className="text-[11px] text-red-400 mt-1">
+                    Please share a valid YouTube link (such as <code className="font-mono bg-red-950 px-1 py-0.5 rounded">youtube.com/watch?v=...</code>, <code className="font-mono bg-red-950 px-1 py-0.5 rounded">youtu.be/...</code>, or Shorts).
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                id="dismiss-complaint-button"
+                onClick={() => setSharedLinkComplaint(null)}
+                className="p-1.5 rounded-lg text-red-400 hover:text-red-200 hover:bg-red-900/40 transition shrink-0"
+                title="Dismiss complaint"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+
+          {/* Shared Link Success Banner */}
+          {sharedLinkSuccess && (
+            <div
+              id="shared-link-success-banner"
+              data-testid="shared-link-success-banner"
+              className="p-3.5 rounded-xl bg-emerald-950/70 border border-emerald-700/80 text-emerald-200 text-xs flex items-center justify-between gap-3 animate-fadeIn shadow-lg"
+            >
+              <div className="flex items-center gap-2.5">
+                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                <span className="font-medium">{sharedLinkSuccess}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSharedLinkSuccess(null)}
+                className="p-1 text-emerald-400 hover:text-emerald-200"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
+
+          {/* Restored Subtitles Notification Toast */}
+          {restoredToast && (
+            <div
+              id="restored-subtitles-toast"
+              data-testid="restored-subtitles-toast"
+              className="px-4 py-2.5 rounded-xl bg-indigo-950/80 border border-indigo-700/80 text-indigo-200 text-xs flex items-center justify-between gap-3 animate-fadeIn shadow-lg"
+            >
+              <div className="flex items-center gap-2">
+                <Subtitles className="w-4 h-4 text-indigo-400 shrink-0" />
+                <span>{restoredToast}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setRestoredToast(null)}
+                className="p-1 text-indigo-400 hover:text-indigo-200"
+              >
+                <X className="w-3 h-3" />
+              </button>
+            </div>
+          )}
+
+          {/* Step 1: Link paste, Sharing & Library Access */}
           <LinkInputBar
             currentUrl={currentUrl}
             onSelectVideo={handleSelectVideo}
             onOpenLibrary={() => setIsLibraryOpen(true)}
+            onOpenShare={() => setIsShareModalOpen(true)}
             libraryCount={library.length}
           />
 
@@ -264,7 +595,7 @@ export default function App() {
             onToggleTheater={() => setTheaterMode(!theaterMode)}
             startTime={startTime}
             detectedFormat={detectedFormat}
-            onFetchSubtitles={handleFetchSubtitles}
+            onFetchSubtitles={() => handleFetchSubtitles(videoId, false)}
             isFetchingSubtitles={isFetchingSubtitles}
             hasSubtitles={activeCues.length > 0}
           />
@@ -273,9 +604,15 @@ export default function App() {
           <SubtitlesTeacherPanel
             cues={activeCues}
             playerRef={playerRef}
-            onLoadCues={(newCues) => setCustomCues(newCues)}
+            onLoadCues={(newCues) => {
+              setCustomCues(newCues);
+              saveCachedSubtitles(videoId, newCues, {
+                title: `Video ${videoId}`,
+                originalUrl: currentUrl,
+              });
+            }}
             onOpenLibrary={() => setIsLibraryOpen(true)}
-            onFetchSubtitles={handleFetchSubtitles}
+            onFetchSubtitles={() => handleFetchSubtitles(videoId, false)}
             isFetchingSubtitles={isFetchingSubtitles}
             fetchError={fetchError}
           />
@@ -287,6 +624,8 @@ export default function App() {
         <span>YouTube Language Learning</span>
         <span>•</span>
         <span>Synchronized Subtitles &amp; Multi-Language Translation</span>
+        <span>•</span>
+        <span>Link Sharing &amp; Persistent Subtitle Caching</span>
       </footer>
 
       {/* Video & Subtitle Library Modal */}
@@ -299,6 +638,14 @@ export default function App() {
         onSelectVideo={handleSelectLibraryItem}
         onSaveCurrentToLibrary={handleSaveCurrentToLibrary}
         onRemoveFromLibrary={handleRemoveFromLibrary}
+      />
+
+      {/* Share Link with App Modal */}
+      <ShareLinkModal
+        isOpen={isShareModalOpen}
+        onClose={() => setIsShareModalOpen(false)}
+        currentUrl={currentUrl}
+        onLoadSharedVideo={handleProcessSharedLink}
       />
 
       {/* Network offline warning */}
