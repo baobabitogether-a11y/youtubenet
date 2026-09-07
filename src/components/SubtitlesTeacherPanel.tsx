@@ -25,16 +25,20 @@ import {
   FolderHeart,
   Loader2,
 } from 'lucide-react';
-import { CaptionCue, TargetLanguage, SyncPlayOrder, YouTubePlayerHandle } from '../types';
+import { CaptionCue, TargetLanguage, SyncPlayOrder, YouTubePlayerHandle, TranslationSource } from '../types';
 import { useSyncEngine } from '../hooks/useSyncEngine';
 import {
   SUPPORTED_TARGET_LANGUAGES,
   SAMPLE_TRANSLATIONS,
   translateText,
+  translateTrackWithNativeFirst,
+  getLanguageTranslationSource,
+  isYouTubeNativeSource,
 } from '../lib/translateService';
 import { formatTimestamp, cleanAndFixEncoding, parseRawCaptionData } from '../utils/captionParser';
 import { isAndroidNativeTTS } from '../lib/ttsEngine';
 import { LanguageSettingsModal } from './LanguageSettingsModal';
+import { ObservedTimedTextModal } from './ObservedTimedTextModal';
 
 interface SubtitlesTeacherPanelProps {
   cues: CaptionCue[];
@@ -44,6 +48,9 @@ interface SubtitlesTeacherPanelProps {
   onFetchSubtitles?: () => void;
   isFetchingSubtitles?: boolean;
   fetchError?: string | null;
+  observedTimedTextUrl?: string | null;
+  videoId?: string;
+  onUpdateObservedTimedTextUrl?: (url: string) => void;
 }
 
 const DEFAULT_TARGET_LANGUAGES: TargetLanguage[] = [
@@ -91,6 +98,9 @@ export const SubtitlesTeacherPanel: React.FC<SubtitlesTeacherPanelProps> = ({
   onFetchSubtitles,
   isFetchingSubtitles = false,
   fetchError = null,
+  observedTimedTextUrl,
+  videoId,
+  onUpdateObservedTimedTextUrl,
 }) => {
   const [targetLanguages, setTargetLanguages] = useState<TargetLanguage[]>(() => {
     try {
@@ -109,8 +119,10 @@ export const SubtitlesTeacherPanel: React.FC<SubtitlesTeacherPanelProps> = ({
 
   const [availableVoices, setAvailableVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [isLangSettingsOpen, setIsLangSettingsOpen] = useState<boolean>(false);
+  const [isObservedModalOpen, setIsObservedModalOpen] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [tableTranslations, setTableTranslations] = useState<Record<string, Record<string, string>>>({});
+  const [langSources, setLangSources] = useState<Record<string, TranslationSource>>({});
 
   useEffect(() => {
     if (typeof window === 'undefined' || !window.speechSynthesis) return;
@@ -186,34 +198,44 @@ export const SubtitlesTeacherPanel: React.FC<SubtitlesTeacherPanelProps> = ({
     languages: targetLanguages,
     playerRef,
     playOrder,
+    observedUrl: observedTimedTextUrl,
+    videoId,
   });
 
-  // Pre-fetch translations for visible cues to ensure multi-column table is populated
+  // Default to YouTube native translation (repeating observed request with tlang & fmt=srt)
+  // and use current translation service as fallback.
   useEffect(() => {
     if (!effectiveCues || effectiveCues.length === 0) return;
     const enabled = targetLanguages.filter((l) => l.enabled);
+
     enabled.forEach((lang) => {
-      effectiveCues.forEach((cue) => {
-        // Sample translations fast-lookup
-        const sampleMatch = SAMPLE_TRANSLATIONS[cue.text]?.[lang.code];
-        if (sampleMatch) {
-          setTableTranslations((prev) => ({
-            ...prev,
-            [cue.id]: { ...(prev[cue.id] || {}), [lang.code]: sampleMatch },
-          }));
-        } else if (!tableTranslations[cue.id]?.[lang.code] && !translations[cue.id]?.[lang.code]) {
-          translateText(cue.text, sourceLang, lang.code).then((res) => {
-            if (res) {
-              setTableTranslations((prev) => ({
-                ...prev,
-                [cue.id]: { ...(prev[cue.id] || {}), [lang.code]: res },
-              }));
-            }
+      translateTrackWithNativeFirst({
+        originalCues: effectiveCues,
+        targetLang: lang.code,
+        observedUrl: observedTimedTextUrl,
+        videoId,
+        sourceLang,
+        onStatusChange: (src) => {
+          setLangSources((prev) => ({ ...prev, [lang.code]: src }));
+        },
+      }).then((res) => {
+        if (res.source) {
+          setLangSources((prev) => ({ ...prev, [lang.code]: res.source }));
+        }
+        if (res.translations) {
+          setTableTranslations((prev) => {
+            const updated = { ...prev };
+            Object.entries(res.translations).forEach(([cId, text]) => {
+              updated[cId] = { ...(updated[cId] || {}), [lang.code]: text };
+            });
+            return updated;
           });
         }
+      }).catch((err) => {
+        console.warn(`Translation error for ${lang.code}:`, err);
       });
     });
-  }, [effectiveCues, targetLanguages, sourceLang]);
+  }, [effectiveCues, targetLanguages, sourceLang, observedTimedTextUrl, videoId]);
 
   const getCueTranslation = (cue: CaptionCue, langCode: string): string => {
     if (translations[cue.id]?.[langCode]) return translations[cue.id][langCode];
@@ -408,6 +430,20 @@ export const SubtitlesTeacherPanel: React.FC<SubtitlesTeacherPanelProps> = ({
             ))}
           </div>
 
+          {/* YouTube Native TimedText Repetition Inspector */}
+          <button
+            type="button"
+            id="open-observed-timedtext-button"
+            data-testid="open-observed-timedtext-button"
+            onClick={() => setIsObservedModalOpen(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold bg-neutral-800 hover:bg-neutral-700 text-neutral-200 border border-neutral-700 transition active:scale-95"
+            title="Inspect and test YouTube Native Subtitles TimedText request repetition"
+          >
+            <Radio className="w-3.5 h-3.5 text-red-400 animate-pulse" />
+            <span className="hidden md:inline">YouTube Native Stream</span>
+            <span className="md:hidden">YT Stream</span>
+          </button>
+
           <button
             type="button"
             id="open-language-settings-button"
@@ -417,7 +453,7 @@ export const SubtitlesTeacherPanel: React.FC<SubtitlesTeacherPanelProps> = ({
             title="Configure target languages and speaking speed"
           >
             <Settings2 className="w-3.5 h-3.5 text-indigo-400" />
-            <span>Languages &amp; Speed Settings</span>
+            <span>Languages &amp; Speed</span>
           </button>
         </div>
       </div>
@@ -674,12 +710,38 @@ export const SubtitlesTeacherPanel: React.FC<SubtitlesTeacherPanelProps> = ({
                       <th className="py-2.5 px-4 min-w-[220px]">Original Subtitle</th>
                       {enabledTargetLangs.map((lang) => (
                         <th key={lang.id} className="py-2.5 px-4 min-w-[220px]">
-                          <div className="flex items-center gap-1.5">
+                          <div className="flex items-center justify-between gap-1.5">
+                            <div className="flex items-center gap-1.5">
+                              <span
+                                className="w-2 h-2 rounded-full"
+                                style={{ backgroundColor: lang.color || '#6366f1' }}
+                              />
+                              <span>{lang.name}</span>
+                            </div>
                             <span
-                              className="w-2 h-2 rounded-full"
-                              style={{ backgroundColor: lang.color || '#6366f1' }}
-                            />
-                            <span>{lang.name}</span>
+                              className={`text-[9px] px-1.5 py-0.5 rounded font-mono font-medium ${
+                                isYouTubeNativeSource(langSources[lang.code])
+                                  ? 'bg-emerald-950 text-emerald-300 border border-emerald-700/60'
+                                  : 'bg-neutral-800 text-neutral-400 border border-neutral-700'
+                              }`}
+                              title={
+                                langSources[lang.code] === 'youtube_native_client'
+                                  ? 'Translated directly via viewer client browser (tlang repetition)'
+                                  : langSources[lang.code] === 'youtube_native_android'
+                                  ? 'Translated directly via Android device client shell (tlang repetition)'
+                                  : isYouTubeNativeSource(langSources[lang.code])
+                                  ? 'Translated by repeating YouTube timedtext request with tlang & fmt=srt'
+                                  : 'Translated using fallback service'
+                              }
+                            >
+                              {langSources[lang.code] === 'youtube_native_client'
+                                ? 'YT Client'
+                                : langSources[lang.code] === 'youtube_native_android'
+                                ? 'YT Android'
+                                : isYouTubeNativeSource(langSources[lang.code])
+                                ? 'YT Native'
+                                : 'Fallback'}
+                            </span>
                           </div>
                         </th>
                       ))}
@@ -808,6 +870,17 @@ export const SubtitlesTeacherPanel: React.FC<SubtitlesTeacherPanelProps> = ({
           testSpeakLang(testCue, lang);
         }}
         getVoicesForLang={getVoicesForLang}
+      />
+
+      {/* YouTube Native TimedText Subtitle Stream Modal */}
+      <ObservedTimedTextModal
+        isOpen={isObservedModalOpen}
+        onClose={() => setIsObservedModalOpen(false)}
+        observedUrl={observedTimedTextUrl || null}
+        videoId={videoId}
+        onSaveUrl={(url) => {
+          onUpdateObservedTimedTextUrl?.(url);
+        }}
       />
     </div>
   );

@@ -1,7 +1,11 @@
 import { useState, useRef, useCallback, useEffect, type RefObject } from 'react';
 import { CaptionCue, TargetLanguage, SyncPlayOrder, YouTubePlayerHandle } from '../types';
 import { speakText, stopTTS, isTTSSpeaking, getTTSEngineType } from '../lib/ttsEngine';
-import { translateText, prefetchCueTranslations } from '../lib/translateService';
+import {
+  translateText,
+  prefetchCueTranslations,
+  translateTrackWithNativeFirst,
+} from '../lib/translateService';
 
 interface UseSyncEngineProps {
   cues: CaptionCue[];
@@ -9,6 +13,8 @@ interface UseSyncEngineProps {
   languages: TargetLanguage[];
   playerRef: RefObject<YouTubePlayerHandle | null>;
   playOrder: SyncPlayOrder;
+  observedUrl?: string | null;
+  videoId?: string;
 }
 
 export function useSyncEngine({
@@ -17,6 +23,8 @@ export function useSyncEngine({
   languages,
   playerRef,
   playOrder,
+  observedUrl,
+  videoId,
 }: UseSyncEngineProps) {
   const [activeCueIndex, setActiveCueIndex] = useState<number>(-1);
   const [isSyncActive, setIsSyncActive] = useState<boolean>(false);
@@ -37,6 +45,34 @@ export function useSyncEngine({
       stopTTS();
     };
   }, []);
+
+  // Prepopulate translations using YouTube Native timedtext translation by default (fallback to GTX)
+  useEffect(() => {
+    if (!cues || cues.length === 0) return;
+    const enabledLangs = languages.filter((l) => l.enabled);
+    enabledLangs.forEach(async (lang) => {
+      try {
+        const result = await translateTrackWithNativeFirst({
+          originalCues: cues,
+          targetLang: lang.code,
+          observedUrl,
+          videoId,
+          sourceLang,
+        });
+        if (result.translations) {
+          setTranslations((prev) => {
+            const updated = { ...prev };
+            Object.entries(result.translations).forEach(([cId, text]) => {
+              updated[cId] = { ...(updated[cId] || {}), [lang.code]: text };
+            });
+            return updated;
+          });
+        }
+      } catch (err) {
+        console.warn(`[SyncEngine] Pre-translation error for ${lang.code}:`, err);
+      }
+    });
+  }, [cues, languages, observedUrl, videoId, sourceLang]);
 
   /**
    * Helper to retrieve or fetch translation for a cue

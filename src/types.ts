@@ -92,6 +92,19 @@ export interface InterceptedCaptionData {
   source: 'native_webview_interceptor' | 'simulated_test';
 }
 
+export type TranslationSource = 'youtube_native' | 'google_translate_fallback' | 'sample_offline';
+
+export interface YouTubeNativeTranslationResult {
+  success: boolean;
+  source: TranslationSource;
+  targetLang: string;
+  format?: 'xml' | 'json3' | 'vtt' | 'unknown';
+  cues?: CaptionCue[];
+  translations?: Record<string, string>;
+  error?: string;
+  modifiedUrl?: string;
+}
+
 declare global {
   interface Window {
     AndroidNativeShell?: {
@@ -100,6 +113,10 @@ declare global {
       speak?: (text: string, lang: string, rate: number, utteranceId: string) => boolean;
       stopSpeaking?: () => void;
       isSpeaking?: () => boolean;
+      getLastObservedTimedTextUrl?: () => string;
+      setLastObservedTimedTextUrl?: (url: string) => void;
+      fetchTranslatedCaptions?: (targetLang: string, format: string) => string;
+      fetchTranslatedCaptionsWithUrl?: (url: string, targetLang: string, format: string) => string;
     };
     onNativeCaptionsInterceptedBase64?: (base64Json: string) => void;
     onNativeTTSDone?: (utteranceId: string) => void;

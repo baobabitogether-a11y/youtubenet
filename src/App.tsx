@@ -33,6 +33,8 @@ import {
   hasCachedSubtitles,
   getLastActiveVideo,
   saveLastActiveVideo,
+  getObservedTimedTextUrl,
+  saveObservedTimedTextUrl,
 } from './utils/subtitleCache';
 import { ShieldAlert, CheckCircle2, Subtitles, X, RefreshCw } from 'lucide-react';
 
@@ -121,6 +123,15 @@ export default function App() {
   // Shared Link feedback state (complaint if not youtube link, or success)
   const [sharedLinkComplaint, setSharedLinkComplaint] = useState<string | null>(null);
   const [sharedLinkSuccess, setSharedLinkSuccess] = useState<string | null>(null);
+
+  // Observed YouTube TimedText URL for repeating requests with tlang & fmt=srt
+  const [observedTimedTextUrl, setObservedTimedTextUrl] = useState<string | null>(() => {
+    return getObservedTimedTextUrl(videoId);
+  });
+
+  useEffect(() => {
+    setObservedTimedTextUrl(getObservedTimedTextUrl(videoId));
+  }, [videoId]);
 
   const playerRef = useRef<YouTubePlayerHandle | null>(null);
 
@@ -312,6 +323,10 @@ export default function App() {
       });
 
       // 3. Auto-cache into library state
+      if (data.observedUrl) {
+        saveObservedTimedTextUrl(idToFetch, data.observedUrl);
+        setObservedTimedTextUrl(data.observedUrl);
+      }
       setLibrary((prev) => {
         const existing = prev.find((item) => item.id === idToFetch);
         if (existing) {
@@ -368,6 +383,10 @@ export default function App() {
           };
 
           setInterceptedData(data);
+          if (payload.url) {
+            saveObservedTimedTextUrl(videoId, payload.url);
+            setObservedTimedTextUrl(payload.url);
+          }
           if (cues.length > 0) {
             setCustomCues(cues);
             // Save intercepted captions into persistent cache
@@ -604,6 +623,12 @@ export default function App() {
           <SubtitlesTeacherPanel
             cues={activeCues}
             playerRef={playerRef}
+            observedTimedTextUrl={observedTimedTextUrl}
+            videoId={videoId}
+            onUpdateObservedTimedTextUrl={(newUrl) => {
+              saveObservedTimedTextUrl(videoId, newUrl);
+              setObservedTimedTextUrl(newUrl);
+            }}
             onLoadCues={(newCues) => {
               setCustomCues(newCues);
               saveCachedSubtitles(videoId, newCues, {

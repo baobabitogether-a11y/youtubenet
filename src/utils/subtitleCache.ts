@@ -212,3 +212,40 @@ export function getLastActiveVideo(): { videoId: string; url: string } | null {
   } catch {}
   return null;
 }
+
+const TIMEDTEXT_URL_PREFIX = 'yt_observed_timedtext_';
+
+// In-memory observed timedtext requests
+const observedTimedTextCache = new Map<string, string>();
+
+// Example observed timedtext request URL for FcRzAdI8R9U
+export const SAMPLE_OBSERVED_TIMEDTEXT_URL =
+  'https://www.youtube.com/api/timedtext?v=FcRzAdI8R9U&ei=DCKeatfmPKPRp-oPnqqzgQk&caps=asr&opi=112496729&exp=xpe&xoaf=5&xowf=1&xospf=1&hl=iw&ip=0.0.0.0&ipbits=0&expire=1788773501&sparams=ip%2Cipbits%2Cexpire%2Cv%2Cei%2Ccaps%2Copi%2Cexp%2Cxoaf&signature=217DB32BACFE6E926084313687E03C0510F5DB34.D9A7AA9EE51F782ED170B2AA7DE3BD0AC740CF6A&key=yt8&kind=asr&lang=ru&potc=1&pot=MlMn_joq5JrJpSfCjjnANqOg57lCS8ADS5l8eKcn0AlVAENOp6W5mBZK47JADSIT6O2ApINKm8nUuNtmdxJwIJwpTZBJx8pnBEBe0f6-5yn6TBh6DA%3D%3D&fmt=json3&xorb=2&xobt=3&xovt=3&tlang=en&cbr=Chrome&cbrver=152.0.0.0&c=WEB&cver=2.20260904.01.00&cplayer=UNIPLAYER&cos=Windows&cosver=10.0&cplatform=DESKTOP';
+
+export function saveObservedTimedTextUrl(videoId: string, url: string): void {
+  if (!videoId || !url) return;
+  observedTimedTextCache.set(videoId, url);
+  try {
+    localStorage.setItem(`${TIMEDTEXT_URL_PREFIX}${videoId}`, url);
+  } catch {}
+}
+
+export function getObservedTimedTextUrl(videoId: string): string | null {
+  if (!videoId) return null;
+  if (observedTimedTextCache.has(videoId)) {
+    return observedTimedTextCache.get(videoId)!;
+  }
+  try {
+    const saved = localStorage.getItem(`${TIMEDTEXT_URL_PREFIX}${videoId}`);
+    if (saved) {
+      observedTimedTextCache.set(videoId, saved);
+      return saved;
+    }
+  } catch {}
+
+  // Built-in sample fallback for video FcRzAdI8R9U
+  if (videoId === 'FcRzAdI8R9U') {
+    return SAMPLE_OBSERVED_TIMEDTEXT_URL;
+  }
+  return null;
+}

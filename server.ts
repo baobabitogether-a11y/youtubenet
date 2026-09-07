@@ -3,10 +3,31 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
-import { cleanAndFixEncoding } from './src/utils/captionParser';
+import { cleanAndFixEncoding, parseRawCaptionData } from './src/utils/captionParser';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+async function discoverTimedTextUrlForVideo(videoId: string): Promise<string | null> {
+  try {
+    const res = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+        'Accept-Language': 'en-US,en;q=0.9',
+      },
+    });
+    if (!res.ok) return null;
+    const html = await res.text();
+    const match = html.match(/"captionTracks":\s*\[\s*\{"baseUrl":"([^"]+)"/);
+    if (match && match[1]) {
+      return match[1].replace(/\\u0026/g, '&').replace(/\\\//g, '/');
+    }
+  } catch (err) {
+    console.warn(`[Server] Could not discover timedtext URL for video ${videoId}:`, err);
+  }
+  return null;
+}
 
 async function startServer() {
   const app = express();
@@ -114,16 +135,104 @@ Do not include any conversational filler, markdown explanations, or code blocks 
         text: cleanAndFixEncoding(String(c.text || '')),
       })).filter((c) => c.text.length > 0);
 
+      const observedUrl = await discoverTimedTextUrlForVideo(videoId);
+
       return res.json({
         success: true,
         videoId,
         cues,
         count: cues.length,
+        observedUrl: observedUrl || undefined,
       });
     } catch (err: any) {
       console.error('Error fetching subtitles for video:', err);
       return res.status(500).json({
         error: err.message || 'Failed to fetch subtitles from YouTube.',
+      });
+    }
+  });
+
+  // Repeat observed YouTube timedtext request with target language (tlang) and format (fmt=srt or json3)
+  app.post('/api/youtube-timedtext-translate', async (req, res) => {
+    try {
+      const { observedUrl, targetLang, format = 'srt', videoId } = req.body;
+      if (!targetLang) {
+        return res.status(400).json({ error: 'targetLang is required' });
+      }
+
+      let timedTextUrl = (observedUrl || '').trim();
+
+      // If no observedUrl provided, attempt to discover from videoId
+      if (!timedTextUrl && videoId) {
+        timedTextUrl = await discoverTimedTextUrlForVideo(videoId) || '';
+      }
+
+      if (!timedTextUrl) {
+        return res.status(400).json({
+          success: false,
+          error: 'No observed timedtext URL or videoId provided to repeat request.',
+        });
+      }
+
+      // Build the repeated request with target language code and format
+      const urlObj = new URL(timedTextUrl);
+      urlObj.searchParams.set('tlang', targetLang);
+      if (format) {
+        urlObj.searchParams.set('fmt', format);
+      }
+      const finalUrl = urlObj.toString();
+
+      console.log(`[TimedText Translate] Repeating request for tlang=${targetLang}, fmt=${format}`);
+
+      const response = await fetch(finalUrl, {
+        headers: {
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+          Referer: 'https://www.youtube.com/',
+          Origin: 'https://www.youtube.com',
+          Accept: '*/*',
+          'Accept-Language': `${targetLang},en-US;q=0.9,en;q=0.8`,
+        },
+      });
+
+      const status = response.status;
+      const rawText = await response.text();
+
+      if (!response.ok || !rawText || rawText.includes('<title>Sorry...</title>')) {
+        return res.status(200).json({
+          success: false,
+          status,
+          error: `YouTube timedtext request returned status ${status}`,
+          modifiedUrl: finalUrl,
+        });
+      }
+
+      // Parse the returned subtitles (SRT, JSON3, or XML)
+      const parsed = parseRawCaptionData(rawText);
+
+      if (!parsed.cues || parsed.cues.length === 0) {
+        return res.status(200).json({
+          success: false,
+          status,
+          error: 'YouTube returned empty subtitle content for this language',
+          modifiedUrl: finalUrl,
+        });
+      }
+
+      return res.json({
+        success: true,
+        source: 'youtube_native',
+        targetLang,
+        format: parsed.format,
+        count: parsed.cues.length,
+        cues: parsed.cues,
+        modifiedUrl: finalUrl,
+      });
+    } catch (err: any) {
+      console.error('Error in /api/youtube-timedtext-translate:', err);
+      return res.status(500).json({
+        success: false,
+        error: err.message || 'Failed to translate via YouTube timedtext',
       });
     }
   });

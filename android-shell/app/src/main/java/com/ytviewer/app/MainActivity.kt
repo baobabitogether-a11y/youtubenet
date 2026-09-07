@@ -46,6 +46,9 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private val mainHandler = Handler(Looper.getMainLooper())
     private var textToSpeech: TextToSpeech? = null
     private var isTtsReady: Boolean = false
+    @Volatile
+    private var lastObservedTimedTextUrl: String? = null
+    private val lastObservedHeaders = java.util.concurrent.ConcurrentHashMap<String, String>()
 
     companion object {
         private const val TAG = "YT_CAPTION_INTERCEPTOR"
@@ -117,6 +120,13 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     Log.i(TAG, "=== INTERCEPTED YOUTUBE CAPTION REQUEST ===")
                     Log.i(TAG, "URL: $url")
                     Log.i(TAG, "Method: ${request?.method}")
+
+                    // Retain observed timedtext request URL and headers for native translation repetition
+                    lastObservedTimedTextUrl = url
+                    request?.requestHeaders?.let { h ->
+                        lastObservedHeaders.clear()
+                        lastObservedHeaders.putAll(h)
+                    }
 
                     try {
                         // Replicate the request with original headers
@@ -433,6 +443,73 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         @JavascriptInterface
         fun isSpeaking(): Boolean {
             return textToSpeech?.isSpeaking ?: false
+        }
+
+        @JavascriptInterface
+        fun getLastObservedTimedTextUrl(): String {
+            return lastObservedTimedTextUrl ?: ""
+        }
+
+        @JavascriptInterface
+        fun setLastObservedTimedTextUrl(url: String) {
+            if (url.isNotEmpty()) {
+                lastObservedTimedTextUrl = url
+            }
+        }
+
+        @JavascriptInterface
+        fun fetchTranslatedCaptions(targetLang: String, format: String): String {
+            val base = lastObservedTimedTextUrl ?: return ""
+            return executeTimedTextRepetition(base, targetLang, format)
+        }
+
+        @JavascriptInterface
+        fun fetchTranslatedCaptionsWithUrl(customUrl: String, targetLang: String, format: String): String {
+            val base = if (customUrl.isNotEmpty()) customUrl else (lastObservedTimedTextUrl ?: "")
+            if (base.isEmpty()) return ""
+            return executeTimedTextRepetition(base, targetLang, format)
+        }
+
+        private fun executeTimedTextRepetition(base: String, targetLang: String, format: String): String {
+            return try {
+                val uri = android.net.Uri.parse(base)
+                val queryParamNames = uri.queryParameterNames
+                val builder = uri.buildUpon().clearQuery()
+                for (name in queryParamNames) {
+                    val isTlang = name.equals("tlang", ignoreCase = true)
+                    val isFmt = name.equals("fmt", ignoreCase = true) && format.isNotEmpty()
+                    if (!isTlang && !isFmt) {
+                        for (value in uri.getQueryParameters(name)) {
+                            builder.appendQueryParameter(name, value)
+                        }
+                    }
+                }
+                builder.appendQueryParameter("tlang", targetLang)
+                if (format.isNotEmpty()) {
+                    builder.appendQueryParameter("fmt", format)
+                }
+                val targetUrl = builder.build().toString()
+                Log.i(TAG, "Native Shell repeating observed timedtext request for targetLang=$targetLang, fmt=$format: $targetUrl")
+                val reqBuilder = Request.Builder().url(targetUrl)
+                lastObservedHeaders.forEach { (k, v) ->
+                    // Exclude Accept-Encoding so OkHttp handles transparent decompression
+                    if (!k.equals("accept-encoding", ignoreCase = true)) {
+                        reqBuilder.addHeader(k, v)
+                    }
+                }
+                val resp = okHttpClient.newCall(reqBuilder.build()).execute()
+                if (resp.isSuccessful) {
+                    val bodyString = resp.body?.string() ?: ""
+                    Log.i(TAG, "Native Shell timedtext repetition successful: ${bodyString.length} chars received")
+                    bodyString
+                } else {
+                    Log.w(TAG, "Native Shell repeating timedtext returned HTTP ${resp.code}")
+                    ""
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error fetching native translated captions: ${e.message}", e)
+                ""
+            }
         }
     }
 }
