@@ -32,7 +32,7 @@ import {
   SAMPLE_TRANSLATIONS,
   translateText,
 } from '../lib/translateService';
-import { formatTimestamp } from '../utils/captionParser';
+import { formatTimestamp, cleanAndFixEncoding, parseRawCaptionData } from '../utils/captionParser';
 import { isAndroidNativeTTS } from '../lib/ttsEngine';
 import { LanguageSettingsModal } from './LanguageSettingsModal';
 
@@ -298,6 +298,14 @@ export const SubtitlesTeacherPanel: React.FC<SubtitlesTeacherPanelProps> = ({
       const content = event.target?.result as string;
       if (!content) return;
 
+      // 1. Try unified parser first (handles XML, JSON3, WebVTT, and SRT with automatic encoding correction)
+      const { cues } = parseRawCaptionData(content);
+      if (cues && cues.length > 0) {
+        onLoadCues?.(cues);
+        return;
+      }
+
+      // 2. Fallback line-by-line parser with full encoding correction
       const lines = content.split(/\r?\n/);
       const parsedCues: CaptionCue[] = [];
       let idx = 1;
@@ -322,10 +330,10 @@ export const SubtitlesTeacherPanel: React.FC<SubtitlesTeacherPanelProps> = ({
           const textLines: string[] = [];
           i++;
           while (i < lines.length && lines[i].trim() !== '') {
-            textLines.push(lines[i].trim().replace(/<[^>]+>/g, ''));
+            textLines.push(lines[i].trim());
             i++;
           }
-          const text = textLines.join(' ');
+          const text = cleanAndFixEncoding(textLines.join(' '));
           if (text) {
             parsedCues.push({
               id: `custom-cue-${idx++}`,
@@ -341,7 +349,7 @@ export const SubtitlesTeacherPanel: React.FC<SubtitlesTeacherPanelProps> = ({
         onLoadCues?.(parsedCues);
       }
     };
-    reader.readAsText(file);
+    reader.readAsText(file, 'utf-8');
   };
 
   const currentCue =

@@ -15,7 +15,7 @@ import {
   CaptionCue,
 } from './types';
 import { DEFAULT_VIDEO_ID, DEFAULT_VIDEO_URL, parseYouTubeUrl } from './utils/youtube';
-import { parseRawCaptionData } from './utils/captionParser';
+import { parseRawCaptionData, decodeBase64ToUtf8, cleanAndFixEncoding, fixMojibake } from './utils/captionParser';
 
 const LIBRARY_STORAGE_KEY = 'yt_video_library_v2';
 
@@ -94,21 +94,27 @@ export default function App() {
         throw new Error(data.error || 'No subtitles found for this video.');
       }
 
-      setCustomCues(data.cues);
+      // Ensure every cue text is properly decoded and clean of HTML entities / Mojibake
+      const sanitizedCues: CaptionCue[] = data.cues.map((c: CaptionCue) => ({
+        ...c,
+        text: cleanAndFixEncoding(c.text),
+      }));
+
+      setCustomCues(sanitizedCues);
 
       // Auto-cache into library
       setLibrary((prev) => {
         const existing = prev.find((item) => item.id === idToFetch);
         if (existing) {
           return prev.map((item) =>
-            item.id === idToFetch ? { ...item, cues: data.cues } : item
+            item.id === idToFetch ? { ...item, cues: sanitizedCues } : item
           );
         }
         const newItem: LibraryVideoItem = {
           id: idToFetch,
           originalUrl: currentUrl,
           title: `Video ${idToFetch}`,
-          cues: data.cues,
+          cues: sanitizedCues,
           timestamp: Date.now(),
         };
         return [newItem, ...prev];
@@ -126,9 +132,13 @@ export default function App() {
     if (typeof window !== 'undefined') {
       window.onNativeCaptionsInterceptedBase64 = (base64Payload: string) => {
         try {
-          const decodedString = atob(base64Payload);
+          // Robust UTF-8 Base64 decoding (prevents ASCII/Latin-1 character corruption)
+          const decodedString = decodeBase64ToUtf8(base64Payload);
           const payload = JSON.parse(decodedString);
-          const { format, cues } = parseRawCaptionData(payload.rawData || '');
+          
+          // Ensure rawData is properly decoded and parsed
+          const cleanRawData = fixMojibake(payload.rawData || '');
+          const { format, cues } = parseRawCaptionData(cleanRawData);
 
           const data: InterceptedCaptionData = {
             id: `native-${Date.now()}`,
@@ -139,8 +149,8 @@ export default function App() {
             status: payload.status || 200,
             contentType: payload.contentType || 'text/xml',
             format,
-            rawData: payload.rawData || '',
-            bytes: payload.bytes || payload.rawData?.length || 0,
+            rawData: cleanRawData,
+            bytes: payload.bytes || cleanRawData.length || 0,
             cues,
             source: 'native_webview_interceptor',
           };

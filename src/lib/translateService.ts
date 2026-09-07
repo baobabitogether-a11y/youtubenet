@@ -1,5 +1,6 @@
 import { CaptionCue } from '../types';
 import { normalizeLanguageCode } from './ttsEngine';
+import { cleanAndFixEncoding } from '../utils/captionParser';
 
 const memoryCache = new Map<string, string>();
 
@@ -96,7 +97,7 @@ export async function translateText(
       translated = data.translatedText;
     }
 
-    const finalResult = translated.trim() || trimmed;
+    const finalResult = cleanAndFixEncoding(translated.trim() || trimmed);
     memoryCache.set(cacheKey, finalResult);
     return finalResult;
   } catch (err) {

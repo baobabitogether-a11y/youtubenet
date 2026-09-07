@@ -3,6 +3,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
+import { cleanAndFixEncoding } from './src/utils/captionParser';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -102,7 +103,7 @@ Do not include any conversational filler, markdown explanations, or code blocks 
         });
       }
 
-      // Sanitize cues
+      // Sanitize cues with correct character encoding and entity normalization
       const cues = parsedCues.map((c, idx) => ({
         id: c.id || `cue-${idx + 1}`,
         start: typeof c.start === 'number' && !isNaN(c.start) ? Math.max(0, c.start) : idx * 3,
@@ -110,7 +111,7 @@ Do not include any conversational filler, markdown explanations, or code blocks 
           typeof c.duration === 'number' && !isNaN(c.duration)
             ? Math.max(1.0, c.duration)
             : 3.0,
-        text: String(c.text || '').trim(),
+        text: cleanAndFixEncoding(String(c.text || '')),
       })).filter((c) => c.text.length > 0);
 
       return res.json({
