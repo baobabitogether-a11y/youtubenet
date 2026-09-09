@@ -6,6 +6,12 @@ import { SubtitlesTeacherPanel } from './components/SubtitlesTeacherPanel';
 import { VideoLibraryModal } from './components/VideoLibraryModal';
 import { ShareLinkModal } from './components/ShareLinkModal';
 import { OfflineIndicator } from './components/OfflineIndicator';
+import { NetworkInspectorModal } from './components/NetworkInspectorModal';
+import { ErrorInspectorModal } from './components/ErrorInspectorModal';
+import { FloatingDiagnosticDock } from './components/FloatingDiagnosticDock';
+import { useAppDispatch, useAppSelector } from './store';
+import { transition } from './store/stateMachineSlice';
+import { addError } from './store/errorsSlice';
 import {
   VideoItem,
   LibraryVideoItem,
@@ -57,6 +63,8 @@ const DEFAULT_LIBRARY_ITEMS: LibraryVideoItem[] = [
 ];
 
 export default function App() {
+  const dispatch = useAppDispatch();
+
   // Determine initial video ID and URL
   const [videoId, setVideoId] = useState<string>(() => {
     if (typeof window !== 'undefined') {
@@ -100,6 +108,7 @@ export default function App() {
   const [isLibraryOpen, setIsLibraryOpen] = useState<boolean>(false);
   const [isShareModalOpen, setIsShareModalOpen] = useState<boolean>(false);
   const [interceptedData, setInterceptedData] = useState<InterceptedCaptionData | null>(null);
+  const [captionsEnabled, setCaptionsEnabled] = useState<boolean>(true);
 
   // Restore cached subtitles for active video on initialization
   const [customCues, setCustomCues] = useState<CaptionCue[] | null>(() => {
@@ -287,6 +296,13 @@ export default function App() {
         setCustomCues(cached);
         setFetchError(null);
         setRestoredToast(`Restored ${cached.length} cached subtitles`);
+        dispatch(
+          transition({
+            to: 'captions_loaded',
+            actionName: 'RESTORE_CACHED_SUBTITLES',
+            payload: { videoId: idToFetch, cueCount: cached.length },
+          })
+        );
         setTimeout(() => setRestoredToast(null), 3000);
         return;
       }
@@ -294,6 +310,13 @@ export default function App() {
 
     setIsFetchingSubtitles(true);
     setFetchError(null);
+    dispatch(
+      transition({
+        to: 'fetching_captions',
+        actionName: 'FETCH_SUBTITLES_START',
+        payload: { videoId: idToFetch, forceRefresh },
+      })
+    );
 
     try {
       const res = await fetch('/api/fetch-subtitles', {
@@ -344,11 +367,38 @@ export default function App() {
         return [newItem, ...prev];
       });
 
+      dispatch(
+        transition({
+          to: 'captions_loaded',
+          actionName: 'FETCH_SUBTITLES_SUCCESS',
+          payload: { videoId: idToFetch, cueCount: sanitizedCues.length, source: data.source },
+        })
+      );
+
       setRestoredToast(`Saved ${sanitizedCues.length} subtitles to cache`);
       setTimeout(() => setRestoredToast(null), 3000);
     } catch (err: any) {
       console.warn('Subtitles fetch error:', err);
-      setFetchError(err.message || 'Failed to fetch subtitles.');
+      const errorMessage = err.message || 'Failed to fetch subtitles.';
+      setFetchError(errorMessage);
+
+      dispatch(
+        addError({
+          section: 'subtitles',
+          title: `Subtitle Extraction Failed (${idToFetch})`,
+          message: errorMessage,
+          details: { videoId: idToFetch, error: String(err) },
+          stack: err?.stack,
+        })
+      );
+
+      dispatch(
+        transition({
+          to: 'error',
+          actionName: 'FETCH_SUBTITLES_FAILED',
+          payload: { error: errorMessage },
+        })
+      );
     } finally {
       setIsFetchingSubtitles(false);
     }
@@ -617,6 +667,30 @@ export default function App() {
             onFetchSubtitles={() => handleFetchSubtitles(videoId, false)}
             isFetchingSubtitles={isFetchingSubtitles}
             hasSubtitles={activeCues.length > 0}
+            captionsEnabled={captionsEnabled}
+            onToggleCaptions={(enabled) => {
+              setCaptionsEnabled(enabled);
+              if (enabled) {
+                dispatch(
+                  transition({
+                    to: 'fetching_captions',
+                    actionName: 'CAPTION_ICON_TOGGLED_ON',
+                    payload: { videoId },
+                  })
+                );
+                if (activeCues.length === 0) {
+                  handleFetchSubtitles(videoId, false);
+                }
+              } else {
+                dispatch(
+                  transition({
+                    to: 'video_ready',
+                    actionName: 'CAPTION_ICON_TOGGLED_OFF',
+                    payload: { videoId },
+                  })
+                );
+              }
+            }}
           />
 
           {/* Steps 2-6: Subtitles Teacher & Multi-Column Translation Workspace */}
@@ -675,6 +749,15 @@ export default function App() {
 
       {/* Network offline warning */}
       <OfflineIndicator />
+
+      {/* Real-time Web Network Traffic Inspector (always accessible) */}
+      <NetworkInspectorModal />
+
+      {/* App Errors & Redux State Machine Actions Inspector (always accessible) */}
+      <ErrorInspectorModal />
+
+      {/* Persistent Floating Diagnostic Dock */}
+      <FloatingDiagnosticDock />
     </div>
   );
 }

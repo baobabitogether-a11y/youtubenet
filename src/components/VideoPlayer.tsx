@@ -26,6 +26,8 @@ interface VideoPlayerProps {
   onFetchSubtitles?: () => void;
   isFetchingSubtitles?: boolean;
   hasSubtitles?: boolean;
+  captionsEnabled?: boolean;
+  onToggleCaptions?: (enabled: boolean) => void;
 }
 
 export const VideoPlayer = forwardRef<YouTubePlayerHandle, VideoPlayerProps>(
@@ -40,9 +42,27 @@ export const VideoPlayer = forwardRef<YouTubePlayerHandle, VideoPlayerProps>(
       onFetchSubtitles,
       isFetchingSubtitles = false,
       hasSubtitles = false,
+      captionsEnabled: controlledCaptionsEnabled,
+      onToggleCaptions,
     },
     ref
   ) => {
+    const [localCaptionsEnabled, setLocalCaptionsEnabled] = useState(hasSubtitles);
+    const captionsActive = controlledCaptionsEnabled !== undefined ? controlledCaptionsEnabled : localCaptionsEnabled;
+
+    const handleToggleCaptions = () => {
+      const nextState = !captionsActive;
+      if (controlledCaptionsEnabled === undefined) {
+        setLocalCaptionsEnabled(nextState);
+      }
+      onToggleCaptions?.(nextState);
+
+      // Requirement 4: Auto-detect subtitles once the caption icon is set to ON
+      if (nextState && !hasSubtitles && onFetchSubtitles) {
+        onFetchSubtitles();
+      }
+    };
+
     const [autoplay, setAutoplay] = useState(false);
     const [loop, setLoop] = useState(false);
     const [copiedLink, setCopiedLink] = useState(false);
@@ -257,35 +277,58 @@ export const VideoPlayer = forwardRef<YouTubePlayerHandle, VideoPlayerProps>(
 
           {/* Right: Controls & Sharing */}
           <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
-            {/* Direct CC / Fetch Subtitles button */}
+            {/* Direct CC / Auto-Detect Subtitles Caption Toggle button */}
             {onFetchSubtitles && (
+              <button
+                id="caption-toggle-button"
+                data-testid="caption-toggle-button"
+                type="button"
+                onClick={handleToggleCaptions}
+                disabled={isFetchingSubtitles}
+                aria-pressed={captionsActive}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition active:scale-95 ${
+                  hasSubtitles
+                    ? 'bg-emerald-950/70 text-emerald-300 border-emerald-700/70 hover:bg-emerald-900/80 shadow-sm shadow-emerald-900/20'
+                    : isFetchingSubtitles
+                    ? 'bg-amber-950/70 text-amber-300 border-amber-700/70 animate-pulse'
+                    : captionsActive
+                    ? 'bg-blue-900/60 text-blue-200 border-blue-600 hover:bg-blue-800'
+                    : 'bg-red-600 hover:bg-red-500 text-white border-red-500 shadow-sm shadow-red-600/20'
+                }`}
+                title={
+                  captionsActive
+                    ? 'Captions are ON (Click to toggle)'
+                    : 'Turn captions ON to auto-detect subtitles'
+                }
+              >
+                {isFetchingSubtitles ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Subtitles className={`w-3.5 h-3.5 ${captionsActive ? 'text-emerald-300' : ''}`} />
+                )}
+                <span>
+                  {isFetchingSubtitles
+                    ? 'Detecting Subtitles...'
+                    : hasSubtitles
+                    ? 'Captions: ON'
+                    : captionsActive
+                    ? 'Captions: ON (Auto-Detect)'
+                    : 'Turn Captions ON'}
+                </span>
+              </button>
+            )}
+
+            {/* Also keep fetch-captions-button for backward compatibility */}
+            {onFetchSubtitles && !hasSubtitles && !isFetchingSubtitles && (
               <button
                 id="fetch-captions-button"
                 data-testid="fetch-captions-button"
                 type="button"
                 onClick={onFetchSubtitles}
-                disabled={isFetchingSubtitles}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition active:scale-95 ${
-                  hasSubtitles
-                    ? 'bg-emerald-950/70 text-emerald-300 border-emerald-700/70 hover:bg-emerald-900/80'
-                    : isFetchingSubtitles
-                    ? 'bg-amber-950/70 text-amber-300 border-amber-700/70 animate-pulse'
-                    : 'bg-red-600 hover:bg-red-500 text-white border-red-500 shadow-sm shadow-red-600/20'
-                }`}
-                title="Fetch captions / subtitles for this video"
+                className="hidden"
+                aria-hidden="true"
               >
-                {isFetchingSubtitles ? (
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                ) : (
-                  <Subtitles className="w-3.5 h-3.5" />
-                )}
-                <span>
-                  {isFetchingSubtitles
-                    ? 'Fetching Subtitles...'
-                    : hasSubtitles
-                    ? 'Subtitles Cached'
-                    : 'Fetch Subtitles / CC'}
-                </span>
+                Fetch Subtitles / CC
               </button>
             )}
 
