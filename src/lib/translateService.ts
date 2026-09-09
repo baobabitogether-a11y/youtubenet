@@ -1,7 +1,7 @@
 import { CaptionCue, TranslationSource, YouTubeNativeTranslationResult } from '../types';
 import { normalizeLanguageCode } from './ttsEngine';
 import { cleanAndFixEncoding, parseRawCaptionData } from '../utils/captionParser';
-import { getObservedTimedTextUrl } from '../utils/subtitleCache';
+import { getObservedTimedTextUrl, saveObservedTimedTextUrl } from '../utils/subtitleCache';
 
 const memoryCache = new Map<string, string>();
 // Cache of full translated tracks from YouTube native timedtext: key = `${videoId || 'current'}:${langCode}`

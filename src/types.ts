@@ -92,7 +92,12 @@ export interface InterceptedCaptionData {
   source: 'native_webview_interceptor' | 'simulated_test';
 }
 
-export type TranslationSource = 'youtube_native' | 'google_translate_fallback' | 'sample_offline';
+export type TranslationSource =
+  | 'youtube_native'
+  | 'youtube_native_client'
+  | 'youtube_native_android'
+  | 'google_translate_fallback'
+  | 'sample_offline';
 
 export interface YouTubeNativeTranslationResult {
   success: boolean;

@@ -18,6 +18,11 @@ on:
         required: false
         type: boolean
         default: false
+      build_release_apk:
+        description: 'Build Release APK (default: false, skips release build)'
+        required: false
+        type: boolean
+        default: false
       run_e2e_tests:
         description: 'Run E2E UI verification tests and produce video artifact'
         required: false
@@ -87,13 +92,15 @@ jobs:
         run: |
           echo "sdk.dir=$ANDROID_HOME" > android-shell/local.properties
 
-      - name: Build Android Release APK
+      # Build Android Release APK (Skipped by default per configuration)
+      - name: Build Android Release APK (Skipped by default)
+        if: github.event.inputs.build_release_apk == 'true'
         run: |
           cd android-shell
           ./gradlew assembleRelease --stacktrace
 
-      - name: Build Android Debug APK (Optional)
-        continue-on-error: true
+      # Main build target: Debug APK (always builds fast and without keystore requirements)
+      - name: Build Android Debug APK
         run: |
           cd android-shell
           ./gradlew assembleDebug --stacktrace
@@ -103,15 +110,17 @@ jobs:
         run: |
           mkdir -p release-artifacts
           
-          # Find and copy release and debug APKs
-          find android-shell/app/build/outputs/apk/release -type f -name "*.apk" -exec cp {} release-artifacts/YouTube-Viewer-release.apk \; 2>/dev/null || true
+          # Find and copy debug APK
           find android-shell/app/build/outputs/apk/debug -type f -name "*.apk" -exec cp {} release-artifacts/YouTube-Viewer-debug.apk \; 2>/dev/null || true
+          
+          # If release APK was built, copy it too
+          find android-shell/app/build/outputs/apk/release -type f -name "*.apk" -exec cp {} release-artifacts/YouTube-Viewer-release.apk \; 2>/dev/null || true
 
-          # If release APK name was different, pick first available APK
-          if [ ! -f "release-artifacts/YouTube-Viewer-release.apk" ]; then
+          # If debug APK was not in standard folder, find first available apk
+          if [ ! -f "release-artifacts/YouTube-Viewer-debug.apk" ]; then
             first_apk=$(find android-shell/app/build/outputs/apk -type f -name "*.apk" 2>/dev/null | head -n 1)
             if [ -n "$first_apk" ]; then
-              cp "$first_apk" release-artifacts/YouTube-Viewer-release.apk
+              cp "$first_apk" release-artifacts/YouTube-Viewer-debug.apk
             fi
           fi
 
@@ -172,8 +181,8 @@ jobs:
             ## 📱 YouTube Viewer Android App Release
 
             ### 📦 Download Links
-            - **[Download YouTube-Viewer-release.apk](https://github.com/${{ github.repository }}/releases/download/${{ steps.release_info.outputs.TAG }}/YouTube-Viewer-release.apk)** (Signed, Ready to install)
-            - **[Download YouTube-Viewer-debug.apk](https://github.com/${{ github.repository }}/releases/download/${{ steps.release_info.outputs.TAG }}/YouTube-Viewer-debug.apk)** (Developer Debug APK)
+            - **[Download YouTube-Viewer-debug.apk](https://github.com/${{ github.repository }}/releases/download/${{ steps.release_info.outputs.TAG }}/YouTube-Viewer-debug.apk)** (Latest APK - Ready to install)
+            - Automated install script available in repository: `install-apk.bat` (Windows) / `install-apk.ps1` (PowerShell) / `install-apk.sh` (Bash)
 
             ---
 
