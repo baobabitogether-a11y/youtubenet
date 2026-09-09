@@ -47,7 +47,7 @@ export const VideoPlayer = forwardRef<YouTubePlayerHandle, VideoPlayerProps>(
     },
     ref
   ) => {
-    const [localCaptionsEnabled, setLocalCaptionsEnabled] = useState(hasSubtitles);
+    const [localCaptionsEnabled, setLocalCaptionsEnabled] = useState(controlledCaptionsEnabled ?? false);
     const captionsActive = controlledCaptionsEnabled !== undefined ? controlledCaptionsEnabled : localCaptionsEnabled;
 
     const handleToggleCaptions = () => {

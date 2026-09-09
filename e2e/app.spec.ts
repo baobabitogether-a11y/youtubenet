@@ -18,7 +18,10 @@ test.describe('YouTube Video Viewer - Subtitle Auto-Detection Tests', () => {
     await expect(captionToggleButton).toBeVisible();
 
     // 2. Click the caption icon to toggle captions to ON
-    await captionToggleButton.click();
+    const isPressed = await captionToggleButton.getAttribute('aria-pressed');
+    if (isPressed !== 'true') {
+      await captionToggleButton.click();
+    }
 
     // 3. Verify auto-detection runs (real network call or cached native stream, unmocked)
     // The button state updates to indicate captions are ON / detecting / ready
@@ -32,7 +35,7 @@ test.describe('YouTube Video Viewer - Subtitle Auto-Detection Tests', () => {
 
     // Wait for subtitles to be auto-detected and rendered
     await expect(
-      subtitleCueRow.or(activeCueText).or(restoredToast)
+      subtitleCueRow.or(activeCueText).or(restoredToast).first()
     ).toBeVisible({ timeout: 15000 });
 
     // 5. Verify the caption text is real non-empty speech text
